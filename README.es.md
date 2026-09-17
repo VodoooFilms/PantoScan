@@ -21,6 +21,10 @@
   <a href="README.md">English</a>
 </p>
 
+<p align="center">
+  <img src="assets/pantosrt-editor.png" width="430" alt="Panto SRT con un modelo Whisper descargado y clips de subtítulos editables">
+</p>
+
 ---
 
 ## Por qué Panto SRT
