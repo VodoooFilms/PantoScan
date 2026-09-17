@@ -86,8 +86,8 @@ Requisitos: **macOS 13.4+ (Apple Silicon)** o **Windows 10/11 x64**,
 ## Generar subtítulos
 
 1. Arrastra un audio o video (MP3, M4A, WAV, MP4, MOV…).
-2. La transcripción arranca automáticamente con el modelo **Turbo** y
-   **detección automática de idioma**, agrupando clips con los límites por
+2. Elige un modelo descargado en el selector y genera con **detección
+   automática de idioma**, agrupando clips con los límites por
    defecto (42 caracteres, 3,5 s máx, 0,2 s de pausa mínima).
 3. Revisa y corrige el texto en el editor; usa **Reagrupar** si ajustaste los
    tiempos manualmente.
@@ -102,14 +102,18 @@ empieza en cero.
 
 ## Modelos
 
-El modelo Whisper se descarga bajo demanda la primera vez que generas
-subtítulos. Tamaños recomendados:
+Usa el selector para descargar un modelo antes de transcribir. Los modelos
+descargados se guardan solo en los datos de Panto SRT y se eliminan con el
+botón de papelera; nunca se comparten con otras apps. Tamaños recomendados:
 
 | Modelo   | RAM/VRAM | Notas                         |
 |----------|----------|-------------------------------|
-| `turbo`  | ~1,6 GB  | Por defecto, mejor equilibrio |
-| `medium` | ~1,5 GB  | Más exacto, más lento         |
+| `tiny`   | ~75 MB   | Vista previa rápida           |
+| `base`   | ~142 MB  | Proyectos livianos            |
 | `small`  | ~466 MB  | Equipos modestos              |
+| `medium` | ~1,5 GB  | Más exacto, más lento         |
+| `turbo`  | ~1,6 GB  | Mejor equilibrio velocidad/calidad |
+| `large-v3` | ~3,1 GB | Máxima precisión, más lento   |
 
 ---
 

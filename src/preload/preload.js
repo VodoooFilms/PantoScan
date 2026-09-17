@@ -6,6 +6,9 @@ contextBridge.exposeInMainWorld('pantoSRT', {
   platform: process.platform,
   selectMedia: () => ipcRenderer.invoke('select-media'),
   inspectMedia: (filePath) => ipcRenderer.invoke('inspect-media', filePath),
+  listModels: () => ipcRenderer.invoke('list-models'),
+  downloadModel: (modelId) => ipcRenderer.invoke('download-model', modelId),
+  deleteModel: (modelId) => ipcRenderer.invoke('delete-model', modelId),
   transcribeMedia: (filePath, options) => ipcRenderer.invoke('transcribe-media', filePath, options),
   cancelTranscription: () => ipcRenderer.invoke('cancel-transcription'),
   groupClips: (words, options) => ipcRenderer.invoke('group-clips', words, options),
@@ -23,5 +26,10 @@ contextBridge.exposeInMainWorld('pantoSRT', {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('transcription-progress', listener);
     return () => ipcRenderer.removeListener('transcription-progress', listener);
+  },
+  onModelDownloadStatus: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('model-download-status', listener);
+    return () => ipcRenderer.removeListener('model-download-status', listener);
   }
 });

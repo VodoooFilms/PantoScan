@@ -166,3 +166,15 @@ test('buildFcpxml rounds durations to whole frames', () => {
   assert.match(xml, /offset="10\/30s"/);
   assert.match(xml, /duration="50\/30s"/);
 });
+
+test('buildFcpxml keeps every cue editable and frame-synchronised', () => {
+  const clips = [
+    { start: 0.04, end: 1.08, text: 'Primera línea' },
+    { start: 2.02, end: 3.14, text: 'Segunda\nlínea' }
+  ];
+  const xml = buildFcpxml(clips, { fps: 25, sourcePath: '/tmp/timeline.mov' });
+  assert.match(xml, /<title name="Subtítulo 1" lane="1" offset="1\/25s" duration="26\/25s">/);
+  assert.match(xml, /<title name="Subtítulo 2" lane="1" offset="51\/25s" duration="28\/25s">/);
+  assert.match(xml, /<text-style ref="sts-0">Primera línea<\/text-style>/);
+  assert.match(xml, /<text-style ref="sts-1">Segunda&lt;br\/&gt;línea<\/text-style>/);
+});

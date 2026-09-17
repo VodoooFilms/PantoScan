@@ -86,7 +86,7 @@ Requirements: **macOS 13.4+ (Apple Silicon)** or **Windows 10/11 x64**,
 ## Making subtitles
 
 1. Drop an audio or video file (MP3, M4A, WAV, MP4, MOV…).
-2. Transcription starts automatically with the **Turbo** model and
+2. Choose a downloaded model in the model selector, then generate with
    **auto language detection**, grouping clips at sensible defaults
    (42 chars, 3.5 s max, 0.2 s min pause).
 3. Review and fix the text inline; hit **Re-group** if you retimed manually.
@@ -100,14 +100,18 @@ they land in sync on a timeline that starts at zero.
 
 ## Models
 
-The Whisper model downloads on demand the first time you generate subtitles.
-Recommended sizes:
+Use the selector to download a model before transcribing. Downloaded models
+are kept only in Panto SRT's app-data folder and can be removed with the trash
+button; they are never shared with other apps. Recommended sizes:
 
 | Model  | RAM/VRAM | Notes                      |
 |--------|----------|----------------------------|
-| `turbo`| ~1.6 GB  | Default, best balance      |
-| `medium`| ~1.5 GB  | More accurate, slower      |
+| `tiny` | ~75 MB   | Fast preview               |
+| `base` | ~142 MB  | Light projects             |
 | `small`| ~466 MB  | Low-end machines           |
+| `medium`| ~1.5 GB | More accurate, slower      |
+| `turbo`| ~1.6 GB  | Best speed/quality balance |
+| `large-v3`| ~3.1 GB| Highest accuracy, slowest  |
 
 ---
 

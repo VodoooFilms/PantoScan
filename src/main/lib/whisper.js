@@ -19,9 +19,12 @@ const https = require('https');
 const APP_ROOT = path.join(__dirname, '..', '..', '..');
 
 const MODELS = {
-  small: { file: 'ggml-small.bin', label: 'Small' },
-  medium: { file: 'ggml-medium.bin', label: 'Medium' },
-  turbo: { file: 'ggml-large-v3-turbo.bin', label: 'Turbo' }
+  tiny: { file: 'ggml-tiny.bin', label: 'Tiny', size: '75 MB' },
+  base: { file: 'ggml-base.bin', label: 'Base', size: '142 MB' },
+  small: { file: 'ggml-small.bin', label: 'Small', size: '466 MB' },
+  medium: { file: 'ggml-medium.bin', label: 'Medium', size: '1.5 GB' },
+  turbo: { file: 'ggml-large-v3-turbo.bin', label: 'Turbo', size: '1.6 GB' },
+  'large-v3': { file: 'ggml-large-v3.bin', label: 'Large v3', size: '3.1 GB' }
 };
 
 const MODEL_HOST = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main';
@@ -66,6 +69,26 @@ function findModel(modelId) {
 
 function modelMeta(modelId) {
   return MODELS[modelId] || null;
+}
+
+function modelInfo(modelId) {
+  const meta = modelMeta(modelId);
+  if (!meta) return null;
+  const downloadedPath = path.join(modelsDirectory(), meta.file);
+  const downloaded = fs.existsSync(downloadedPath);
+  const availablePath = findModel(modelId);
+  return {
+    id: modelId,
+    label: meta.label,
+    size: meta.size,
+    downloaded,
+    available: Boolean(availablePath),
+    removable: downloaded
+  };
+}
+
+function listModels() {
+  return Object.keys(MODELS).map(modelInfo);
 }
 
 function downloadFile(url, destination, onProgress, redirects = 0) {
@@ -118,6 +141,16 @@ async function downloadModel(modelId, onProgress) {
   const destination = path.join(modelsDirectory(), meta.file);
   await downloadFile(`${MODEL_HOST}/${meta.file}?download=true`, destination, onProgress);
   return destination;
+}
+
+function deleteModel(modelId) {
+  const meta = modelMeta(modelId);
+  if (!meta) throw new Error(`Modelo desconocido: ${modelId}`);
+  const downloadedPath = path.join(modelsDirectory(), meta.file);
+  if (!fs.existsSync(downloadedPath)) return false;
+  fs.rmSync(downloadedPath, { force: true });
+  fs.rmSync(`${downloadedPath}.part`, { force: true });
+  return true;
 }
 
 function parseTimestamp(value) {
@@ -330,9 +363,11 @@ module.exports = {
   findEngine,
   findModel,
   modelMeta,
+  modelInfo,
+  listModels,
   downloadModel,
+  deleteModel,
   transcribe,
   extractWords,
   extractUtterances
 };
-

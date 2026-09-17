@@ -14,6 +14,7 @@ const { buildFcpxml } = require('./lib/formats/fcpxml');
 let mainWindow = null;
 let currentLanguage = 'es';
 let activeController = null;
+const downloadingModels = new Set();
 
 const TEXT = {
   es: {
@@ -164,6 +165,35 @@ ipcMain.handle('inspect-media', async (event, filePath) => {
   assertTrustedEvent(event);
   if (!media.isSupported(filePath) || !fs.existsSync(filePath)) throw new Error(t('unsupported'));
   return media.fileDetails(filePath);
+});
+
+ipcMain.handle('list-models', async (event) => {
+  assertTrustedEvent(event);
+  return whisper.listModels();
+});
+
+ipcMain.handle('download-model', async (event, modelId) => {
+  assertTrustedEvent(event);
+  if (!whisper.modelMeta(modelId)) throw new Error('Modelo desconocido.');
+  if (downloadingModels.has(modelId)) throw new Error('Este modelo ya se está descargando.');
+  downloadingModels.add(modelId);
+  try {
+    send('model-download-status', { model: modelId, status: 'downloading', percent: 0 });
+    await whisper.downloadModel(modelId, (percent) => {
+      send('model-download-status', { model: modelId, status: 'downloading', percent });
+    });
+    send('model-download-status', { model: modelId, status: 'downloaded', percent: 100 });
+    return whisper.listModels();
+  } finally {
+    downloadingModels.delete(modelId);
+  }
+});
+
+ipcMain.handle('delete-model', async (event, modelId) => {
+  assertTrustedEvent(event);
+  if (downloadingModels.has(modelId)) throw new Error('Espera a que termine la descarga antes de borrar el modelo.');
+  whisper.deleteModel(modelId);
+  return whisper.listModels();
 });
 
 ipcMain.handle('transcribe-media', async (event, filePath, options) => {

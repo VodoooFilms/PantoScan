@@ -27,9 +27,12 @@ const WHISPER_DIR = path.join(ROOT, 'build', 'whisper');
 const ENGINE_REPO = 'ggml-org/whisper.cpp';
 const MODEL_HOST = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main';
 const MODELS = {
+  tiny: 'ggml-tiny.bin',
+  base: 'ggml-base.bin',
   small: 'ggml-small.bin',
   medium: 'ggml-medium.bin',
-  turbo: 'ggml-large-v3-turbo.bin'
+  turbo: 'ggml-large-v3-turbo.bin',
+  'large-v3': 'ggml-large-v3.bin'
 };
 
 const log = (message, ...rest) => process.stdout.write(`  ${message}\n`.padStart(1, ' '), ...rest);

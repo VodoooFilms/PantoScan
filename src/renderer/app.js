@@ -7,6 +7,14 @@ const TEXT = {
     generate: 'Generar subtítulos',
     exportSrt: 'Exportar SRT',
     exportXml: 'Exportar FCPXML',
+    modelLabel: 'Modelo Whisper',
+    modelReadyToDownload: 'No descargado',
+    modelDownloaded: 'Descargado',
+    modelBundled: 'Incluido con la app',
+    download: 'Descargar',
+    downloading: (percent) => `Descargando ${percent}%`,
+    deleteModel: 'Borrar modelo',
+    modelRequired: 'Descarga el modelo seleccionado antes de generar subtítulos.',
     cancel: 'Cancelar',
     downloadingModel: 'Descargando modelo…',
     modelReady: 'Modelo listo',
@@ -29,6 +37,14 @@ const TEXT = {
     generate: 'Generate subtitles',
     exportSrt: 'Export SRT',
     exportXml: 'Export FCPXML',
+    modelLabel: 'Whisper model',
+    modelReadyToDownload: 'Not downloaded',
+    modelDownloaded: 'Downloaded',
+    modelBundled: 'Included with the app',
+    download: 'Download',
+    downloading: (percent) => `Downloading ${percent}%`,
+    deleteModel: 'Delete model',
+    modelRequired: 'Download the selected model before generating subtitles.',
     cancel: 'Cancel',
     downloadingModel: 'Downloading model…',
     modelReady: 'Model ready',
@@ -55,7 +71,10 @@ const state = {
   words: null,
   clips: [],
   transcribing: false,
-  lastExport: null
+  lastExport: null,
+  models: [],
+  selectedModel: localStorage.getItem('panto-srt-model') || SUBTITLE_DEFAULTS.model,
+  modelDownload: null
 };
 
 const $ = (id) => document.getElementById(id);
@@ -110,6 +129,57 @@ function setUiLanguage(lang) {
   $('exportXmlButton').textContent = u('exportXml');
   $('cancelButton').textContent = u('cancel');
   $('regroupButton').textContent = u('regroup');
+  $('modelLabel').textContent = u('modelLabel');
+  $('modelDeleteButton').setAttribute('aria-label', u('deleteModel'));
+  $('modelDeleteButton').title = u('deleteModel');
+  renderModelManager();
+}
+
+function currentModel() {
+  return state.models.find((model) => model.id === state.selectedModel) || null;
+}
+
+function renderModelManager() {
+  const select = $('modelSelect');
+  const selected = currentModel();
+  select.textContent = '';
+  state.models.forEach((model) => {
+    const option = document.createElement('option');
+    option.value = model.id;
+    option.selected = model.id === state.selectedModel;
+    option.textContent = `${model.label} · ${model.size}`;
+    select.append(option);
+  });
+  if (state.models.length && !selected) {
+    state.selectedModel = state.models[0].id;
+    select.value = state.selectedModel;
+  }
+  const model = currentModel();
+  const isDownloading = state.modelDownload && state.modelDownload.id === state.selectedModel;
+  const downloadButton = $('modelDownloadButton');
+  const deleteButton = $('modelDeleteButton');
+  select.disabled = state.transcribing || Boolean(isDownloading);
+  downloadButton.disabled = state.transcribing || !model || model.available || Boolean(isDownloading);
+  downloadButton.classList.toggle('hidden', Boolean(model && model.available));
+  deleteButton.classList.toggle('hidden', !model || !model.removable || Boolean(isDownloading));
+  deleteButton.disabled = state.transcribing || Boolean(isDownloading);
+  if (isDownloading) {
+    const percent = Math.round(state.modelDownload.percent || 0);
+    $('modelState').textContent = u('downloading', percent);
+    downloadButton.textContent = u('downloading', percent);
+  } else if (model) {
+    $('modelState').textContent = model.downloaded ? u('modelDownloaded') : model.available ? u('modelBundled') : u('modelReadyToDownload');
+    downloadButton.textContent = u('download');
+  } else {
+    $('modelState').textContent = '';
+    downloadButton.textContent = u('download');
+  }
+}
+
+async function refreshModels() {
+  state.models = await window.pantoSRT.listModels();
+  if (!state.models.some((model) => model.id === state.selectedModel)) state.selectedModel = SUBTITLE_DEFAULTS.model;
+  renderModelManager();
 }
 
 function secondsToStamp(seconds, includeMillis = true) {
@@ -208,6 +278,7 @@ function setBusy(busy) {
   $('generateButton').disabled = busy || !state.file;
   $('cancelButton').classList.toggle('hidden', !busy);
   $('dropZone').style.pointerEvents = busy ? 'none' : '';
+  renderModelManager();
 }
 
 async function pickFromDialog() {
@@ -260,6 +331,8 @@ function setProgress(percent, label) {
 
 async function generate() {
   if (!state.file) { showError(u('selectFileFirst')); return; }
+  const model = currentModel();
+  if (!model || !model.available) { showError(u('modelRequired')); return; }
   showError('');
   hideResult();
   setBusy(true);
@@ -269,7 +342,7 @@ async function generate() {
 
   try {
     const result = await window.pantoSRT.transcribeMedia(state.file.path, {
-      model: SUBTITLE_DEFAULTS.model,
+      model: state.selectedModel,
       language: SUBTITLE_DEFAULTS.lang,
       mediaDuration: state.file.duration
     });
@@ -320,6 +393,36 @@ function wireEvents() {
   $('dropZone').addEventListener('click', pickFromDialog);
   $('removeButton').addEventListener('click', reset);
   $('generateButton').addEventListener('click', generate);
+  $('modelSelect').addEventListener('change', (event) => {
+    state.selectedModel = event.target.value;
+    localStorage.setItem('panto-srt-model', state.selectedModel);
+    renderModelManager();
+  });
+  $('modelDownloadButton').addEventListener('click', async () => {
+    const modelId = state.selectedModel;
+    showError('');
+    try {
+      state.modelDownload = { id: modelId, percent: 0 };
+      renderModelManager();
+      state.models = await window.pantoSRT.downloadModel(modelId);
+    } catch (error) {
+      showError((error && error.message) || 'Error');
+    } finally {
+      state.modelDownload = null;
+      renderModelManager();
+    }
+  });
+  $('modelDeleteButton').addEventListener('click', async () => {
+    const model = currentModel();
+    if (!model || !model.removable) return;
+    showError('');
+    try {
+      state.models = await window.pantoSRT.deleteModel(model.id);
+      renderModelManager();
+    } catch (error) {
+      showError((error && error.message) || 'Error');
+    }
+  });
   $('cancelButton').addEventListener('click', () => window.pantoSRT.cancelTranscription());
 
   $('regroupButton').addEventListener('click', regroup);
@@ -380,7 +483,13 @@ function wireEvents() {
     if (payload.phase === 'model') setProgress(payload.percent, u('downloadingModel'));
     else setProgress(payload.percent);
   });
+  const unsubModelDownload = window.pantoSRT.onModelDownloadStatus((payload) => {
+    if (!state.modelDownload || payload.model !== state.modelDownload.id) return;
+    state.modelDownload.percent = payload.percent;
+    renderModelManager();
+  });
   window.addEventListener('beforeunload', unsubStatus);
+  window.addEventListener('beforeunload', unsubModelDownload);
 }
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -393,4 +502,5 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   requestWindowHeight();
   wireEvents();
+  refreshModels().catch((error) => showError((error && error.message) || 'Error'));
 });
