@@ -1,31 +1,50 @@
 {
-  "name": "panto-srt",
+  "name": "pantoscan",
+  "productName": "PantoScan",
   "version": "0.1.0",
   "private": true,
-  "description": "Private, offline subtitles from voice — transcription to SRT / FCPXML for DaVinci Resolve",
-  "author": "Panto SRT",
-  "license": "UNLICENSED",
-  "homepage": "https://panto.app/srt",
+  "description": "Biblioteca de material por referencia (sin copias), análisis de temas y emociones, y exportación de guías, subtítulos y timelines. Local y privado.",
+  "author": "Antonio Martinez",
+  "license": "MIT",
+  "homepage": "https://github.com/VodoooFilms/PantoScan#readme",
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "https://github.com/VodoooFilms/PantoScan.git"
   },
+  "bugs": {
+    "url": "https://github.com/VodoooFilms/PantoScan/issues"
+  },
+  "keywords": [
+    "video",
+    "transcription",
+    "whisper",
+    "llm",
+    "editing",
+    "davinci-resolve",
+    "fcpxml",
+    "srt",
+    "sqlite-fts5"
+  ],
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "type": "commonjs",
   "main": "src/main/main.js",
   "scripts": {
-    "prepare:whisper": "node scripts/prepare-whisper.js",
-    "prestart": "npm run prepare:whisper",
+    "prestart": "node scripts/set-app-name.js",
     "start": "electron .",
-    "check": "node --check src/main/main.js && node --check src/main/lib/whisper.js && node --check src/main/lib/media.js && node --check src/main/lib/grouping.js && node --check src/main/lib/formats/srt.js && node --check src/main/lib/formats/fcpxml.js && node --check src/preload/preload.js && node --check src/renderer/app.js && node --check scripts/prepare-whisper.js",
+    "llm": "bash scripts/start-llm.sh",
+    "scan": "node src/cli.js scan",
+    "status": "node src/cli.js status",
+    "check": "node --check src/main/main.js && node --check src/main/lib/volumes.js && node --check src/main/lib/media.js && node --check src/main/lib/store.js && node --check src/main/lib/library.js && node --check src/main/lib/queue.js && node --check src/main/lib/analysis.js && node --check src/main/lib/asr.js && node --check src/main/lib/edit.js && node --check src/main/lib/guide.js && node --check src/main/lib/exports.js && node --check src/main/lib/project.js && node --check src/main/lib/pipeline.js && node --check src/preload/preload.js && node --check src/renderer/app.js && node --check src/cli.js && node --check scripts/set-app-name.js",
     "test": "node --test",
-    "prebuild": "npm run prepare:whisper && npm run check && npm test",
-    "build": "npm run check && npm test && electron-builder --mac dmg --arm64",
     "build:dir": "npm run check && npm test && electron-builder --mac dir --arm64",
-    "build:win": "npm run prepare:whisper && npm run check && npm test && electron-builder --win nsis --x64"
+    "build": "npm run check && npm test && electron-builder --mac dmg --arm64"
   },
   "build": {
-    "appId": "com.panto.srt",
-    "productName": "Panto SRT",
-    "artifactName": "PantoSRT-${version}-${arch}.${ext}",
+    "appId": "app.pantoscan",
+    "productName": "PantoScan",
+    "artifactName": "PantoScan-${version}-${arch}.${ext}",
     "directories": {
       "output": "dist"
     },
@@ -34,89 +53,22 @@
       "assets/**/*",
       "package.json"
     ],
-    "extraResources": [
-      {
-        "from": "build/whisper/whisper-cli",
-        "to": "whisper/whisper-cli"
-      },
-      {
-        "from": "build/whisper/whisper-cli.exe",
-        "to": "whisper/whisper-cli.exe"
-      },
-      {
-        "from": "THIRD_PARTY_NOTICES.md",
-        "to": "THIRD_PARTY_NOTICES.md"
-      }
-    ],
     "mac": {
       "category": "public.app-category.video",
-      "icon": "assets/icons/panto-srt.icns",
-      "minimumSystemVersion": "13.4",
+      "icon": "assets/icons/pantoscan.icns",
+      "identity": null,
       "target": [
         {
-          "target": "dmg",
+          "target": "dir",
           "arch": [
             "arm64"
           ]
         }
       ],
-      "identity": null,
-      "extraResources": [
-        {
-          "from": "assets/locales/en.lproj/InfoPlist.strings",
-          "to": "en.lproj/InfoPlist.strings"
-        },
-        {
-          "from": "assets/locales/es.lproj/InfoPlist.strings",
-          "to": "es.lproj/InfoPlist.strings"
-        }
-      ],
       "extendInfo": {
-        "CFBundleName": "Panto SRT",
-        "CFBundleDisplayName": "Panto SRT",
-        "NSHumanReadableCopyright": "Copyright © 2026 Panto SRT"
+        "CFBundleName": "PantoScan",
+        "CFBundleDisplayName": "PantoScan"
       }
-    },
-    "win": {
-      "icon": "assets/icons/panto-srt.png",
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "requestedExecutionLevel": "asInvoker"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "Panto SRT",
-      "uninstallDisplayName": "Panto SRT"
-    },
-    "dmg": {
-      "title": "Panto SRT ${version}",
-      "iconSize": 128,
-      "window": {
-        "width": 540,
-        "height": 380
-      },
-      "contents": [
-        {
-          "x": 150,
-          "y": 190,
-          "type": "file"
-        },
-        {
-          "x": 390,
-          "y": 190,
-          "type": "link",
-          "path": "/Applications"
-        }
-      ]
     }
   },
   "devDependencies": {

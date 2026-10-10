@@ -1,9 +1,27 @@
+# dependencias
 node_modules/
+
+# build
 dist/
-build/whisper/whisper-cli
-build/whisper/whisper-cli.exe
-build/whisper/*.bin
-build/whisper/lib/
-.vscode/
-.DS_Store
+
+# salidas y datos de trabajo (locales, regenerables)
+out/
+work/
+undefined/
+
+# bases de datos locales
+*.db
+*.db-wal
+*.db-shm
+
+# material pesado / medios
+*.mov
+*.mp4
+*.mkv
+
+# logs y temporales
 *.log
+npm-debug.log*
+
+# macOS
+.DS_Store

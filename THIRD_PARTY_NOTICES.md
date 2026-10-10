@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Panto SRT integrates the following open-source components.
+PantoScan integrates the following open-source components.
 
 ## whisper.cpp — engine
 
@@ -36,6 +36,21 @@ SOFTWARE.
 
 The GGML quantized model files distributed via the whisper.cpp project derive
 from the OpenAI Whisper models.
+
+## FFmpeg — media decoding
+
+- Home: https://ffmpeg.org
+- License: LGPL-2.1-or-later / GPL (depending on the build)
+
+PantoScan does not bundle FFmpeg; it uses the `ffmpeg`/`ffprobe` binaries
+already installed on the system.
+
+## SQLite (FTS5)
+
+- Home: https://sqlite.org
+- License: Public Domain
+
+Provided through Node.js' built-in `node:sqlite`.
 
 ## Others
 

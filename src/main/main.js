@@ -1,295 +1,285 @@
 'use strict';
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
-const fs = require('fs');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
-const { pathToFileURL } = require('url');
+const fs = require('fs');
 
-const whisper = require('./lib/whisper');
-const media = require('./lib/media');
-const grouping = require('./lib/grouping');
-const { buildSrt } = require('./lib/formats/srt');
-const { buildFcpxml } = require('./lib/formats/fcpxml');
+const { Store } = require('./lib/store');
+const { createLibrary } = require('./lib/library');
+const { createQueue } = require('./lib/queue');
+const { createPipeline } = require('./lib/pipeline');
+const { createAnalyzer, endpointCandidates, reachable } = require('./lib/analysis');
+const { buildProject, writeProject, backfill, exportMarkdownFiles, exportSrtFiles, exportFcpxmlFiles } = require('./lib/project');
+const { applyEdits } = require('./lib/edit');
+
+const APP_NAME = 'PantoScan';
+const APP_ICON = path.join(__dirname, '..', '..', 'assets', 'icons', 'pantoscan.png');
+
+app.setName(APP_NAME);
+app.setPath('userData', path.join(app.getPath('appData'), 'documental-editor'));
 
 let mainWindow = null;
-let currentLanguage = 'es';
-let activeController = null;
-const downloadingModels = new Set();
+let store = null;
+let library = null;
+let queue = null;
+let pipeline = null;
+let running = false;
+let runController = null;
 
-const TEXT = {
-  es: {
-    about: 'Acerca de Panto SRT', aboutCredit: 'Panto SRT transcribe audio a subtítulos con timestamps reales, 100% local y privado. Exporta SRT y FCPXML para DaVinci Resolve.', hide: 'Ocultar Panto SRT', hideOthers: 'Ocultar otras', unhide: 'Mostrar todo', quit: 'Salir de Panto SRT',
-    edit: 'Edición', undo: 'Deshacer', redo: 'Rehacer', cut: 'Cortar', copy: 'Copiar', paste: 'Pegar', selectAll: 'Seleccionar todo',
-    window: 'Ventana', minimize: 'Minimizar', zoom: 'Zoom', front: 'Traer todo al frente',
-    selectTitle: 'Selecciona un audio o video', compatible: 'Audio y video', audio: 'Audio', videos: 'Videos',
-    unsupported: 'El archivo no tiene un formato compatible.',
-    engineMissing: 'No se encontró el motor whisper. Ejecuta «npm run prepare:whisper» o instala whisper-cpp.',
-    modelMissing: 'El modelo Whisper aún no está descargado. Panto SRT lo descargará ahora.'
-  },
-  en: {
-    about: 'About Panto SRT', aboutCredit: 'Panto SRT turns voice into subtitles with real word-level timestamps, fully local and private. Exports SRT and FCPXML for DaVinci Resolve.', hide: 'Hide Panto SRT', hideOthers: 'Hide Others', unhide: 'Show All', quit: 'Quit Panto SRT',
-    edit: 'Edit', undo: 'Undo', redo: 'Redo', cut: 'Cut', copy: 'Copy', paste: 'Paste', selectAll: 'Select All',
-    window: 'Window', minimize: 'Minimize', zoom: 'Zoom', front: 'Bring All to Front',
-    selectTitle: 'Select an audio or video file', compatible: 'Audio and video', audio: 'Audio', videos: 'Videos',
-    unsupported: 'The file format is not supported.',
-    engineMissing: 'Whisper engine not found. Run «npm run prepare:whisper» or install whisper-cpp.',
-    modelMissing: 'The Whisper model is not downloaded yet. Panto SRT will download it now.'
-  }
-};
+function outRoot() {
+  return path.join(app.getPath('userData'), 'out');
+}
 
-function t(key) {
-  return TEXT[currentLanguage][key];
+function init() {
+  const dbPath = path.join(app.getPath('userData'), 'library.db');
+  store = new Store(dbPath);
+  library = createLibrary(store);
+  queue = createQueue(store);
+  const recovered = queue.requeueStale();
+  if (recovered) console.log(`[init] jobs colgados reencolados: ${recovered}`);
+  pipeline = createPipeline({
+    store, queue, library,
+    outRoot: outRoot(),
+    logger: () => {}
+  });
 }
 
 function send(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
 }
 
-function assertTrustedEvent(event) {
-  const expected = pathToFileURL(path.join(__dirname, '../renderer/index.html')).href;
-  if (!event.senderFrame || event.senderFrame.url !== expected) throw new Error('Untrusted renderer request.');
-}
-
 function createWindow() {
-  const isMac = process.platform === 'darwin';
   mainWindow = new BrowserWindow({
-    width: 529,
-    height: 736,
-    useContentSize: true,
-    minWidth: 480,
-    minHeight: 220,
-    title: 'Panto SRT',
-    ...(isMac ? { titleBarStyle: 'hidden', trafficLightPosition: { x: 14, y: 14 } } : {}),
-    backgroundColor: '#1d1d1f',
-    show: false,
+    width: 1360,
+    height: 900,
+    minWidth: 1024,
+    minHeight: 680,
+    backgroundColor: '#14151a',
+    title: APP_NAME,
+    icon: APP_ICON,
     webPreferences: {
-      preload: path.join(__dirname, '../preload/preload.js'),
+      preload: path.join(__dirname, '..', 'preload', 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true
+      nodeIntegration: false
     }
   });
-  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-  const rendererUrl = pathToFileURL(path.join(__dirname, '../renderer/index.html')).href;
-  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  mainWindow.webContents.on('will-navigate', (event, url) => { if (url !== rendererUrl) event.preventDefault(); });
-  mainWindow.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 }
 
-function createMenu() {
-  if (process.platform === 'win32') {
-    const es = currentLanguage === 'es';
-    Menu.setApplicationMenu(Menu.buildFromTemplate([
-      { label: es ? 'Archivo' : 'File', submenu: [{ role: 'quit', label: t('quit') }] },
-      { label: t('edit'), submenu: [{ role: 'undo', label: t('undo') }, { role: 'redo', label: t('redo') }, { type: 'separator' }, { role: 'cut', label: t('cut') }, { role: 'copy', label: t('copy') }, { role: 'paste', label: t('paste') }, { role: 'selectAll', label: t('selectAll') }] },
-      { label: t('window'), submenu: [{ role: 'minimize', label: t('minimize') }, { role: 'close', label: es ? 'Cerrar' : 'Close' }] },
-      { label: es ? 'Ayuda' : 'Help', submenu: [{ label: t('about'), click: () => app.showAboutPanel() }] }
-    ]));
-    return;
+ipcMain.handle('app:info', () => ({
+  dbPath: path.join(app.getPath('userData'), 'library.db'),
+  outRoot: outRoot(),
+  versions: {
+    electron: process.versions.electron,
+    node: process.versions.node
   }
-  Menu.setApplicationMenu(Menu.buildFromTemplate([
-    {
-      label: 'Panto SRT',
-      submenu: [
-        { role: 'about', label: t('about') },
-        { type: 'separator' },
-        { role: 'hide', label: t('hide') },
-        { role: 'hideOthers', label: t('hideOthers') },
-        { role: 'unhide', label: t('unhide') },
-        { type: 'separator' },
-        { role: 'quit', label: t('quit') }
-      ]
-    },
-    { label: t('edit'), submenu: [{ role: 'undo', label: t('undo') }, { role: 'redo', label: t('redo') }, { type: 'separator' }, { role: 'cut', label: t('cut') }, { role: 'copy', label: t('copy') }, { role: 'paste', label: t('paste') }, { role: 'selectAll', label: t('selectAll') }] },
-    { label: t('window'), submenu: [{ role: 'minimize', label: t('minimize') }, { role: 'zoom', label: t('zoom') }, { role: 'front', label: t('front') }] }
-  ]));
-}
+}));
 
-function updateAboutPanel() {
-  app.setAboutPanelOptions({
-    applicationName: 'Panto SRT',
-    applicationVersion: app.getVersion(),
-    copyright: '© 2026 Panto SRT',
-    credits: t('aboutCredit'),
-    website: ''
-  });
-}
+ipcMain.handle('library:summary', () => library.summary());
+ipcMain.handle('sources:list', () => library.listSources());
+ipcMain.handle('clips:list', () => library.listClips());
+ipcMain.handle('queue:stats', () => queue.stats());
+ipcMain.handle('results:list', () => store.listResults().map((row) => ({
+  clipId: row.clip_id,
+  clipName: row.clip_name,
+  relPath: row.rel_path,
+  volumeName: row.volume_name,
+  outDir: row.out_dir,
+  guidePath: row.guide_path,
+  summary: row.summary,
+  edited: Boolean(row.edited),
+  updatedAt: row.updated_at
+})));
 
-app.whenReady().then(() => {
-  updateAboutPanel();
-  createMenu();
-  createWindow();
-});
-
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
-});
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
-
-ipcMain.on('window:content-height', (event, height) => {
-  assertTrustedEvent(event);
-  if (!mainWindow) return;
-  const value = Math.max(220, Math.min(768, Math.round(Number(height) || 0)));
-  const [width] = mainWindow.getContentSize();
-  mainWindow.setContentSize(width, value, false);
-});
-
-ipcMain.handle('set-language', async (event, language) => {
-  assertTrustedEvent(event);
-  if (!TEXT[language]) return false;
-  currentLanguage = language;
-  updateAboutPanel();
-  createMenu();
-  return true;
-});
-
-ipcMain.handle('select-media', async (event) => {
-  assertTrustedEvent(event);
+ipcMain.handle('sources:add', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: t('selectTitle'),
-    properties: ['openFile'],
-    filters: [
-      { name: t('compatible'), extensions: [...new Set([...media.AUDIO_EXTENSIONS, ...media.VIDEO_EXTENSIONS])].map((extension) => extension.slice(1)) },
-      { name: t('audio'), extensions: [...media.AUDIO_EXTENSIONS].map((extension) => extension.slice(1)) },
-      { name: t('videos'), extensions: [...media.VIDEO_EXTENSIONS].map((extension) => extension.slice(1)) }
-    ]
+    title: 'Agregar carpeta de material',
+    properties: ['openDirectory', 'createDirectory']
   });
-  if (result.canceled || !result.filePaths[0]) return null;
-  return media.fileDetails(result.filePaths[0]);
+  if (result.canceled || !result.filePaths.length) return null;
+  const source = library.addSource(result.filePaths[0]);
+  return source;
 });
 
-ipcMain.handle('inspect-media', async (event, filePath) => {
-  assertTrustedEvent(event);
-  if (!media.isSupported(filePath) || !fs.existsSync(filePath)) throw new Error(t('unsupported'));
-  return media.fileDetails(filePath);
+ipcMain.handle('sources:scan', (_event, sourceId) => {
+  const result = library.scanSource(sourceId, {
+    onProgress: ({ index, file }) => send('scan:progress', { sourceId, index, file })
+  });
+  return result;
 });
 
-ipcMain.handle('list-models', async (event) => {
-  assertTrustedEvent(event);
-  return whisper.listModels();
-});
-
-ipcMain.handle('download-model', async (event, modelId) => {
-  assertTrustedEvent(event);
-  if (!whisper.modelMeta(modelId)) throw new Error('Modelo desconocido.');
-  if (downloadingModels.has(modelId)) throw new Error('Este modelo ya se está descargando.');
-  downloadingModels.add(modelId);
-  try {
-    send('model-download-status', { model: modelId, status: 'downloading', percent: 0 });
-    await whisper.downloadModel(modelId, (percent) => {
-      send('model-download-status', { model: modelId, status: 'downloading', percent });
-    });
-    send('model-download-status', { model: modelId, status: 'downloaded', percent: 100 });
-    return whisper.listModels();
-  } finally {
-    downloadingModels.delete(modelId);
-  }
-});
-
-ipcMain.handle('delete-model', async (event, modelId) => {
-  assertTrustedEvent(event);
-  if (downloadingModels.has(modelId)) throw new Error('Espera a que termine la descarga antes de borrar el modelo.');
-  whisper.deleteModel(modelId);
-  return whisper.listModels();
-});
-
-ipcMain.handle('transcribe-media', async (event, filePath, options) => {
-  assertTrustedEvent(event);
-  options = options && typeof options === 'object' ? options : {};
-  if (!media.isSupported(filePath) || !fs.existsSync(filePath)) throw new Error(t('unsupported'));
-  const modelId = whisper.modelMeta(options.model) ? options.model : 'turbo';
-
-  if (!whisper.findModel(modelId)) {
-    send('transcription-status', { status: 'model-download', model: modelId });
-    await whisper.downloadModel(modelId, (percent) => send('transcription-progress', { phase: 'model', model: modelId, percent }));
-    send('transcription-status', { status: 'model-ready', model: modelId });
-  }
-
-  const controller = new AbortController();
-  activeController = controller;
-  try {
-    send('transcription-status', { status: 'starting' });
-    const result = await whisper.transcribe(filePath, {
-      model: modelId,
-      language: options.language,
-      duration: Number(options.mediaDuration) || undefined,
-      signal: controller.signal,
-      onProgress: (percent) => send('transcription-progress', { phase: 'transcribe', model: modelId, percent }),
-      onStatus: (status) => send('transcription-status', { ...status, model: modelId })
-    });
-    return result;
-  } catch (error) {
-    if (controller.signal.aborted) throw new Error('cancelled');
-    if (error.message === 'engine-missing') throw new Error(t('engineMissing'));
-    if (error.message.startsWith('model-missing:')) throw new Error(t('modelMissing'));
-    throw error;
-  } finally {
-    activeController = null;
-  }
-});
-
-ipcMain.handle('cancel-transcription', async (event) => {
-  assertTrustedEvent(event);
-  if (!activeController) return false;
-  activeController.abort();
-  send('transcription-status', { status: 'cancelling' });
+ipcMain.handle('sources:remove', (_event, sourceId) => {
+  library.removeSource(sourceId);
   return true;
 });
 
-ipcMain.handle('group-clips', async (event, words, options) => {
-  assertTrustedEvent(event);
-  if (!Array.isArray(words)) return [];
-  return grouping.buildClips(words, options || {});
+ipcMain.handle('queue:enqueue', (_event, clipIds) => queue.enqueue(clipIds));
+
+ipcMain.handle('pipeline:run', async (_event, clipIds) => {
+  if (running) return { started: false, reason: 'busy' };
+  running = true;
+  runController = new AbortController();
+  const signal = runController.signal;
+  const selected = clipIds && clipIds.length ? clipIds : library.listClips().filter((clip) => clip.online).map((clip) => clip.id);
+  queue.enqueue(selected);
+  const processed = [];
+  let cancelled = false;
+  try {
+    const pending = queue.stats().pending;
+    for (let index = 0; index < pending; index += 1) {
+      if (signal.aborted) { cancelled = true; break; }
+      const claimed = queue.claimNext();
+      if (!claimed) break;
+      send('pipeline:progress', { clipId: claimed.clip_id, state: 'claimed' });
+      try {
+        const result = await pipeline.processClip(claimed.clip_id, {
+          signal,
+          onState: (state, extra) => send('pipeline:progress', { clipId: claimed.clip_id, state, extra })
+        });
+        processed.push({ clipId: claimed.clip_id, ok: true, outDir: result.written.dir });
+      } catch (error) {
+        if (error.name === 'AbortError') { cancelled = true; }
+        processed.push({ clipId: claimed.clip_id, ok: false, error: error.message });
+      }
+      send('pipeline:progress', { clipId: claimed.clip_id, state: 'settled', ok: processed[processed.length - 1].ok });
+      if (cancelled) break;
+    }
+  } finally {
+    running = false;
+    runController = null;
+  }
+  return { started: true, cancelled, processed, stats: queue.stats() };
 });
 
-function uniqueOutputPath(sourcePath, suffix, extension) {
-  const directory = path.dirname(sourcePath);
-  const name = path.basename(sourcePath, path.extname(sourcePath));
-  let candidate = path.join(directory, `${name}${suffix}${extension}`);
-  let count = 2;
-  while (fs.existsSync(candidate)) {
-    candidate = path.join(directory, `${name}${suffix}-${count}${extension}`);
-    count += 1;
-  }
-  return candidate;
+ipcMain.handle('pipeline:cancel', () => {
+  if (runController) { runController.abort(); return true; }
+  return false;
+});
+
+function readResultBundle(clipId) {
+  const result = store.getResult(clipId);
+  if (!result) return null;
+  let markdown = '';
+  let html = '';
+  try { markdown = fs.readFileSync(path.join(result.out_dir, 'guide.md'), 'utf8'); } catch (_) {}
+  try { html = fs.readFileSync(path.join(result.out_dir, 'guide.html'), 'utf8'); } catch (_) {}
+  let edit = null;
+  try { edit = JSON.parse(fs.readFileSync(path.join(result.out_dir, 'edit.json'), 'utf8')); } catch (_) {}
+  return {
+    clipId,
+    clipName: result.clip_name,
+    outDir: result.out_dir,
+    summary: result.summary,
+    edited: Boolean(result.edited),
+    markdown,
+    html,
+    edit,
+    files: fs.existsSync(result.out_dir) ? fs.readdirSync(result.out_dir) : []
+  };
 }
 
-function validateClips(clips) {
-  if (!Array.isArray(clips) || !clips.length) throw new Error('No hay clips para exportar.');
-  for (const clip of clips) {
-    if (!clip || !clip.text || Number.isNaN(Number(clip.start * 0)) || Number.isNaN(Number(clip.end * 0))) {
-      throw new Error('Clip inválido.');
+ipcMain.handle('result:get', (_event, clipId) => readResultBundle(clipId));
+
+ipcMain.handle('result:save', (_event, clipId, changes) => {
+  const previous = readResultBundle(clipId);
+  if (!previous || !previous.edit) return { ok: false, error: 'sin edición previa' };
+  const edited = applyEdits(previous.edit, changes || {});
+  pipeline.regenerateFromEdit(clipId, edited);
+  return { ok: true, ...readResultBundle(clipId) };
+});
+
+ipcMain.handle('search:query', (_event, query) => {
+  backfill(store);
+  const rows = store.search(query, 100);
+  return rows.map((row) => ({
+    clipId: row.clip_id,
+    clipName: row.clip_name,
+    section: row.section,
+    label: row.label,
+    start: row.start,
+    end: row.end,
+    text: row.text
+  }));
+});
+
+ipcMain.handle('project:build', () => {
+  const bundle = buildProject(store);
+  const written = writeProject(outRoot(), bundle);
+  let html = '';
+  try { html = fs.readFileSync(written['project-guide.html'], 'utf8'); } catch (_) {}
+  return { files: written, html, stats: bundle.stats };
+});
+
+async function pickExportFolder(title) {
+  const picked = await dialog.showOpenDialog(mainWindow, {
+    title,
+    buttonLabel: 'Exportar aquí',
+    properties: ['openDirectory', 'createDirectory'],
+    defaultPath: app.getPath('documents')
+  });
+  if (picked.canceled || !picked.filePaths.length) return null;
+  return picked.filePaths[0];
+}
+
+ipcMain.handle('export:md', async () => {
+  backfill(store);
+  writeProject(outRoot(), buildProject(store));
+  const base = await pickExportFolder('Elige dónde crear la carpeta de exportación (.md)');
+  if (!base) return { ok: false, canceled: true };
+  return { ok: true, ...exportMarkdownFiles(store, outRoot(), base) };
+});
+
+ipcMain.handle('export:srt', async () => {
+  const base = await pickExportFolder('Elige dónde crear la carpeta de subtítulos (.srt)');
+  if (!base) return { ok: false, canceled: true };
+  return { ok: true, kind: 'srt', ...exportSrtFiles(store, outRoot(), base) };
+});
+
+ipcMain.handle('export:fcpxml', async () => {
+  const base = await pickExportFolder('Elige dónde crear la carpeta de timelines (.fcpxml)');
+  if (!base) return { ok: false, canceled: true };
+  return { ok: true, kind: 'fcpxml', ...exportFcpxmlFiles(store, outRoot(), base) };
+});
+
+ipcMain.handle('project:get', () => {
+  const target = path.join(outRoot(), 'project-guide.html');
+  if (!fs.existsSync(target)) return null;
+  try { return fs.readFileSync(target, 'utf8'); } catch (_) { return null; }
+});
+
+ipcMain.handle('open:path', (_event, target) => shell.openPath(target));
+ipcMain.handle('open:external', (_event, target) => shell.openExternal(target));
+
+ipcMain.handle('llm:health', async () => {
+  const analyzer = createAnalyzer();
+  for (const candidate of endpointCandidates()) {
+    if (await reachable(globalThis.fetch, candidate, 2500)) {
+      return { ok: true, endpoint: candidate, taxonomy: analyzer.taxonomy };
     }
   }
-  return clips;
-}
-
-ipcMain.handle('export-subtitles', async (_event, sourcePath, format, clips, options) => {
-  assertTrustedEvent(_event);
-  options = options && typeof options === 'object' ? options : {};
-  if (!media.isSupported(sourcePath) || !fs.existsSync(sourcePath)) throw new Error(t('unsupported'));
-  validateClips(clips);
-  const offset = Number(options.timecodeBase) || 0;
-  const fps = Math.min(120, Math.max(1, Number(options.fps) || 25));
-
-  let outputPath;
-  if (format === 'fcpxml') {
-    const suffix = currentLanguage === 'es' ? '-subtítulos' : '-subtitles';
-    outputPath = uniqueOutputPath(sourcePath, suffix, '.xml');
-    fs.writeFileSync(outputPath, buildFcpxml(clips, { fps, timecodeBase: offset, sourcePath }), 'utf8');
-  } else if (format === 'srt') {
-    outputPath = uniqueOutputPath(sourcePath, '', '.srt');
-    fs.writeFileSync(outputPath, buildSrt(clips, offset), 'utf8');
-  } else {
-    throw new Error(`Formato desconocido: ${format}`);
-  }
-  return { outputPath, bytes: fs.statSync(outputPath).size };
+  return { ok: false, endpoint: null, taxonomy: analyzer.taxonomy };
 });
 
-ipcMain.handle('show-in-folder', async (_event, filePath) => {
-  assertTrustedEvent(_event);
-  if (typeof filePath === 'string' && fs.existsSync(filePath)) shell.showItemInFolder(filePath);
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+  app.whenReady().then(() => {
+    if (process.platform === 'darwin' && app.dock && fs.existsSync(APP_ICON)) app.dock.setIcon(APP_ICON);
+    init();
+    createWindow();
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
+  });
+}
+
+app.on('window-all-closed', () => {
+  if (store) store.close();
+  if (process.platform !== 'darwin') app.quit();
 });

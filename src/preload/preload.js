@@ -1,35 +1,30 @@
 'use strict';
 
-const { contextBridge, ipcRenderer, webUtils } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('pantoSRT', {
-  platform: process.platform,
-  selectMedia: () => ipcRenderer.invoke('select-media'),
-  inspectMedia: (filePath) => ipcRenderer.invoke('inspect-media', filePath),
-  listModels: () => ipcRenderer.invoke('list-models'),
-  downloadModel: (modelId) => ipcRenderer.invoke('download-model', modelId),
-  deleteModel: (modelId) => ipcRenderer.invoke('delete-model', modelId),
-  transcribeMedia: (filePath, options) => ipcRenderer.invoke('transcribe-media', filePath, options),
-  cancelTranscription: () => ipcRenderer.invoke('cancel-transcription'),
-  groupClips: (words, options) => ipcRenderer.invoke('group-clips', words, options),
-  exportSubtitles: (sourcePath, format, clips, options) => ipcRenderer.invoke('export-subtitles', sourcePath, format, clips, options),
-  showInFolder: (filePath) => ipcRenderer.invoke('show-in-folder', filePath),
-  setLanguage: (language) => ipcRenderer.invoke('set-language', language),
-  setContentHeight: (height) => ipcRenderer.send('window:content-height', height),
-  pathForFile: (file) => webUtils.getPathForFile(file),
-  onTranscriptionStatus: (callback) => {
-    const listener = (_event, payload) => callback(payload);
-    ipcRenderer.on('transcription-status', listener);
-    return () => ipcRenderer.removeListener('transcription-status', listener);
-  },
-  onTranscriptionProgress: (callback) => {
-    const listener = (_event, payload) => callback(payload);
-    ipcRenderer.on('transcription-progress', listener);
-    return () => ipcRenderer.removeListener('transcription-progress', listener);
-  },
-  onModelDownloadStatus: (callback) => {
-    const listener = (_event, payload) => callback(payload);
-    ipcRenderer.on('model-download-status', listener);
-    return () => ipcRenderer.removeListener('model-download-status', listener);
-  }
+contextBridge.exposeInMainWorld('api', {
+  info: () => ipcRenderer.invoke('app:info'),
+  summary: () => ipcRenderer.invoke('library:summary'),
+  listSources: () => ipcRenderer.invoke('sources:list'),
+  listClips: () => ipcRenderer.invoke('clips:list'),
+  queueStats: () => ipcRenderer.invoke('queue:stats'),
+  listResults: () => ipcRenderer.invoke('results:list'),
+  addSource: () => ipcRenderer.invoke('sources:add'),
+  scanSource: (sourceId) => ipcRenderer.invoke('sources:scan', sourceId),
+  removeSource: (sourceId) => ipcRenderer.invoke('sources:remove', sourceId),
+  enqueue: (clipIds) => ipcRenderer.invoke('queue:enqueue', clipIds),
+  run: (clipIds) => ipcRenderer.invoke('pipeline:run', clipIds),
+  cancel: () => ipcRenderer.invoke('pipeline:cancel'),
+  getResult: (clipId) => ipcRenderer.invoke('result:get', clipId),
+  saveEdit: (clipId, changes) => ipcRenderer.invoke('result:save', clipId, changes),
+  search: (query) => ipcRenderer.invoke('search:query', query),
+  buildProject: () => ipcRenderer.invoke('project:build'),
+  exportMd: () => ipcRenderer.invoke('export:md'),
+  exportSrt: () => ipcRenderer.invoke('export:srt'),
+  exportFcpxml: () => ipcRenderer.invoke('export:fcpxml'),
+  getProject: () => ipcRenderer.invoke('project:get'),
+  openPath: (target) => ipcRenderer.invoke('open:path', target),
+  llmHealth: () => ipcRenderer.invoke('llm:health'),
+  onScanProgress: (handler) => ipcRenderer.on('scan:progress', (_event, payload) => handler(payload)),
+  onPipelineProgress: (handler) => ipcRenderer.on('pipeline:progress', (_event, payload) => handler(payload))
 });

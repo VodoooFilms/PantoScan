@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <!-- Panto SRT dock icon: intentionally simple and legible at small sizes. -->
-  <rect width="1024" height="1024" rx="228" fill="#27272A"/>
-  <rect x="28" y="28" width="968" height="968" rx="204" fill="none" stroke="#3D3D42" stroke-width="12"/>
-  <path d="M338 735V298h181c110 0 184 73 184 170s-74 169-184 169H338" fill="none" stroke="#F47A2A" stroke-linecap="round" stroke-linejoin="round" stroke-width="106"/>
-  <circle cx="512" cy="817" r="21" fill="#F47A2A"/>
-</svg>

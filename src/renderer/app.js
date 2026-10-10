@@ -1,506 +1,465 @@
 'use strict';
 
-const TEXT = {
-  es: {
-    dropTitle: 'Audio a subtítulos',
-    dropHint: 'arrastra un archivo o haz clic para abrir',
-    generate: 'Generar subtítulos',
-    exportSrt: 'Exportar SRT',
-    exportXml: 'Exportar FCPXML',
-    modelLabel: 'Modelo Whisper',
-    modelReadyToDownload: 'No descargado',
-    modelDownloaded: 'Descargado',
-    modelBundled: 'Incluido con la app',
-    download: 'Descargar',
-    downloading: (percent) => `Descargando ${percent}%`,
-    deleteModel: 'Borrar modelo',
-    modelRequired: 'Descarga el modelo seleccionado antes de generar subtítulos.',
-    cancel: 'Cancelar',
-    downloadingModel: 'Descargando modelo…',
-    modelReady: 'Modelo listo',
-    transcribing: 'Transcribiendo…',
-    cancelling: 'Cancelando…',
-    editing: 'clips',
-    regroup: 'Reagrupar',
-    ready: 'Listo',
-    exportReady: 'Exportado',
-    exportDetails: (name) => `Guardado junto al original`,
-    details: (count, duration) => `${count} clips · ${duration}`,
-    revealed: 'Mostrar en Finder',
-    selectFileFirst: 'Selecciona un audio o video primero.',
-    lightTheme: 'Cambiar a modo claro',
-    darkTheme: 'Cambiar a modo oscuro'
-  },
-  en: {
-    dropTitle: 'Audio to subtitles',
-    dropHint: 'drop a file or click to open',
-    generate: 'Generate subtitles',
-    exportSrt: 'Export SRT',
-    exportXml: 'Export FCPXML',
-    modelLabel: 'Whisper model',
-    modelReadyToDownload: 'Not downloaded',
-    modelDownloaded: 'Downloaded',
-    modelBundled: 'Included with the app',
-    download: 'Download',
-    downloading: (percent) => `Downloading ${percent}%`,
-    deleteModel: 'Delete model',
-    modelRequired: 'Download the selected model before generating subtitles.',
-    cancel: 'Cancel',
-    downloadingModel: 'Downloading model…',
-    modelReady: 'Model ready',
-    transcribing: 'Transcribing…',
-    cancelling: 'Cancelling…',
-    editing: 'clips',
-    regroup: 'Regroup',
-    ready: 'Done',
-    exportReady: 'Exported',
-    exportDetails: () => `Saved next to the original`,
-    details: (count, duration) => `${count} clips · ${duration}`,
-    revealed: 'Reveal in Finder',
-    selectFileFirst: 'Select an audio or video file first.',
-    lightTheme: 'Switch to light mode',
-    darkTheme: 'Switch to dark mode'
-  }
-};
-
-const SUBTITLE_DEFAULTS = { maxChars: 42, maxDuration: 3.5, minGap: 0.2, model: 'turbo', lang: 'auto', fps: 25 };
-
 const state = {
-  appLang: 'es',
-  file: null,
-  words: null,
+  sources: [],
   clips: [],
-  transcribing: false,
-  lastExport: null,
-  models: [],
-  selectedModel: localStorage.getItem('panto-srt-model') || SUBTITLE_DEFAULTS.model,
-  modelDownload: null
+  results: new Map(),
+  selected: new Set(),
+  activeClipId: null,
+  activeResult: null,
+  running: false,
+  searchQuery: '',
+  searchResults: [],
+  outRoot: ''
 };
 
 const $ = (id) => document.getElementById(id);
-const languageToggle = $('languageToggle');
-const themeToggle = $('themeToggle');
 
-function applyTheme(theme) {
-  const isDark = theme !== 'light';
-  document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
-  themeToggle.setAttribute('aria-label', isDark ? u('lightTheme') : u('darkTheme'));
-  themeToggle.title = isDark ? u('lightTheme') : u('darkTheme');
-  localStorage.setItem('panto-srt-theme', isDark ? 'dark' : 'light');
+function fmtSize(bytes) {
+  if (bytes == null) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
+  return `${value.toFixed(value >= 100 || index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
-const SHELL_PAD_TOP = 46;
-const SHELL_PAD_BOTTOM = 18;
-const SHELL_GAP = 12;
-
-function measureContentHeight() {
-  const shell = document.querySelector('.shell');
-  let total = SHELL_PAD_TOP;
-  let first = true;
-  for (const child of shell.children) {
-    if (child.classList.contains('hidden')) continue;
-    if (!first) total += SHELL_GAP;
-    first = false;
-    total += child.offsetHeight;
-  }
-  return Math.ceil(total + SHELL_PAD_BOTTOM);
+function statusFor(clipId) {
+  const result = state.results.get(clipId);
+  if (result) return result.edited
+    ? { label: 'editado', className: 'status-done' }
+    : { label: 'listo', className: 'status-done' };
+  return { label: 'pendiente', className: '' };
 }
 
-function requestWindowHeight() {
-  const hasEditor = !$('editorPanel').classList.contains('hidden');
-  const height = hasEditor ? 736 : measureContentHeight();
-  window.pantoSRT.setContentHeight(Math.max(220, Math.min(768, height)));
-}
+const esc = (value) => String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-function u(key, ...args) {
-  const value = TEXT[state.appLang][key];
-  return typeof value === 'function' ? value(...args) : value;
-}
+const EDIT_BLANKS = {
+  topics: { label: '', start: '0', end: '0', summary: '' },
+  emotions: { label: '', start: '0', end: '0', valence: '0', arousal: '0.5', evidence: '' },
+  roles: { role: '', start: '0', end: '0' },
+  quotes: { text: '', start: '0', end: '0' }
+};
 
-function setUiLanguage(lang) {
-  state.appLang = lang;
-  document.documentElement.lang = lang;
-  languageToggle.textContent = lang === 'es' ? 'EN' : 'ES';
-  languageToggle.title = lang === 'es' ? 'Cambiar a inglés' : 'Cambiar a español';
-  $('dropTitle').textContent = u('dropTitle');
-  $('dropHint').textContent = u('dropHint');
-  $('generateButton').textContent = u('generate');
-  $('exportSrtButton').textContent = u('exportSrt');
-  $('exportXmlButton').textContent = u('exportXml');
-  $('cancelButton').textContent = u('cancel');
-  $('regroupButton').textContent = u('regroup');
-  $('modelLabel').textContent = u('modelLabel');
-  $('modelDeleteButton').setAttribute('aria-label', u('deleteModel'));
-  $('modelDeleteButton').title = u('deleteModel');
-  renderModelManager();
-}
-
-function currentModel() {
-  return state.models.find((model) => model.id === state.selectedModel) || null;
-}
-
-function renderModelManager() {
-  const select = $('modelSelect');
-  const selected = currentModel();
-  select.textContent = '';
-  state.models.forEach((model) => {
-    const option = document.createElement('option');
-    option.value = model.id;
-    option.selected = model.id === state.selectedModel;
-    option.textContent = `${model.label} · ${model.size}`;
-    select.append(option);
+function readEditorForm() {
+  const model = { summary: $('edit-summary').value, topics: [], emotions: [], roles: [], quotes: [] };
+  document.querySelectorAll('#editor .edit-row').forEach((row) => {
+    const item = {};
+    row.querySelectorAll('[data-f]').forEach((input) => { item[input.dataset.f] = input.value; });
+    model[row.dataset.kind].push(item);
   });
-  if (state.models.length && !selected) {
-    state.selectedModel = state.models[0].id;
-    select.value = state.selectedModel;
-  }
-  const model = currentModel();
-  const isDownloading = state.modelDownload && state.modelDownload.id === state.selectedModel;
-  const downloadButton = $('modelDownloadButton');
-  const deleteButton = $('modelDeleteButton');
-  select.disabled = state.transcribing || Boolean(isDownloading);
-  downloadButton.disabled = state.transcribing || !model || model.available || Boolean(isDownloading);
-  downloadButton.classList.toggle('hidden', Boolean(model && model.available));
-  deleteButton.classList.toggle('hidden', !model || !model.removable || Boolean(isDownloading));
-  deleteButton.disabled = state.transcribing || Boolean(isDownloading);
-  if (isDownloading) {
-    const percent = Math.round(state.modelDownload.percent || 0);
-    $('modelState').textContent = u('downloading', percent);
-    downloadButton.textContent = u('downloading', percent);
-  } else if (model) {
-    $('modelState').textContent = model.downloaded ? u('modelDownloaded') : model.available ? u('modelBundled') : u('modelReadyToDownload');
-    downloadButton.textContent = u('download');
-  } else {
-    $('modelState').textContent = '';
-    downloadButton.textContent = u('download');
-  }
+  return model;
 }
 
-async function refreshModels() {
-  state.models = await window.pantoSRT.listModels();
-  if (!state.models.some((model) => model.id === state.selectedModel)) state.selectedModel = SUBTITLE_DEFAULTS.model;
-  renderModelManager();
+function renderEditor(model) {
+  const input = (field, value, type = 'text', cls = '') => `<input type="${type}" data-f="${field}" value="${esc(value)}" class="${cls}">`;
+  const section = (kind, title, grid, fields, rows) => `
+    <div class="editor-section">
+      <h4>${title}</h4>
+      <div data-rows="${kind}">
+        ${rows.map((row, index) => `
+          <div class="edit-row" data-kind="${kind}" data-i="${index}">
+            <div class="edit-grid ${grid}">
+              ${fields.map((field) => `<div><label>${field.label}</label>${input(field.key, row[field.key], field.type || 'text', field.num ? 'num' : '')}</div>`).join('')}
+              <button class="btn btn-small btn-danger" data-remove>Quitar</button>
+            </div>
+          </div>`).join('')}
+      </div>
+      <button class="btn btn-small" data-add="${kind}">+ Añadir</button>
+    </div>`;
+
+  const topicFields = [
+    { key: 'label', label: 'Tema' }, { key: 'start', label: 'Inicio (s)', type: 'number', num: true },
+    { key: 'end', label: 'Fin (s)', type: 'number', num: true }, { key: 'summary', label: 'Resumen' }
+  ];
+  const emotionFields = [
+    { key: 'label', label: 'Emoción' }, { key: 'start', label: 'Inicio (s)', type: 'number', num: true },
+    { key: 'end', label: 'Fin (s)', type: 'number', num: true }, { key: 'valence', label: 'Valencia', type: 'number', num: true },
+    { key: 'arousal', label: 'Activación', type: 'number', num: true }, { key: 'evidence', label: 'Evidencia' }
+  ];
+  const roleFields = [
+    { key: 'role', label: 'Rol' }, { key: 'start', label: 'Inicio (s)', type: 'number', num: true },
+    { key: 'end', label: 'Fin (s)', type: 'number', num: true }
+  ];
+  const quoteFields = [
+    { key: 'text', label: 'Cita' }, { key: 'start', label: 'Inicio (s)', type: 'number', num: true },
+    { key: 'end', label: 'Fin (s)', type: 'number', num: true }
+  ];
+
+  $('editor').innerHTML = `
+    <div class="editor-head">
+      <h3>Editar guía — ${esc(state.activeResult ? state.activeResult.clipName : '')}</h3>
+      <div class="editor-actions">
+        <button class="btn btn-small" id="edit-cancel">Cerrar</button>
+        <button class="btn btn-small btn-primary" id="edit-save">Guardar y re-exportar</button>
+      </div>
+    </div>
+    <div class="field"><label>Resumen del clip</label><textarea id="edit-summary" rows="3">${esc(model.summary || '')}</textarea></div>
+    ${section('topics', 'Temas', 'topic', topicFields, model.topics)}
+    ${section('emotions', 'Emociones', 'emotion', emotionFields, model.emotions)}
+    ${section('roles', 'Roles narrativos', 'role', roleFields, model.roles)}
+    ${section('quotes', 'Citas', 'quote', quoteFields, model.quotes)}
+    <p class="editor-hint">Los cambios se guardan en edit.json y regeneran la guía, subtítulos, marcadores y timelines. No se repite ASR ni LLM.</p>`;
 }
 
-function secondsToStamp(seconds, includeMillis = true) {
-  const total = Math.max(0, Math.round(seconds * 1000));
-  const hours = Math.floor(total / 3600000);
-  const minutes = Math.floor((total % 3600000) / 60000);
-  const secs = Math.floor((total % 60000) / 1000);
-  const millis = total % 1000;
-  const pad = (n, w = 2) => String(n).padStart(w, '0');
-  const body = `${pad(hours)}:${pad(minutes)}:${pad(secs)}`;
-  return includeMillis ? `${body},${pad(millis, 3)}` : body;
-}
-
-function formatDuration(totalSeconds) {
-  const total = Math.round(Number(totalSeconds) || 0);
-  if (!total) return '';
-  const minutes = Math.floor(total / 60);
-  const secs = total % 60;
-  const hours = Math.floor(minutes / 60);
-  if (hours) return `${hours}:${String(minutes % 60).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-  return `${minutes}:${String(secs).padStart(2, '0')}`;
-}
-
-function formatBytes(bytes) {
-  const value = Number(bytes) || 0;
-  if (value < 1024) return `${value} B`;
-  const units = ['KB', 'MB', 'GB'];
-  let index = -1;
-  let size = value;
-  do { size /= 1024; index += 1; } while (size >= 1024 && index < units.length - 1);
-  return `${size.toFixed(size >= 100 ? 0 : size >= 10 ? 1 : 2)} ${units[index]}`;
-}
-
-function rowLabel(clip) {
-  return `${secondsToStamp(clip.start)} → ${secondsToStamp(clip.end)}`;
-}
-
-function renderClipRows() {
-  const list = $('clipList');
-  list.textContent = '';
-  state.clips.forEach((clip, index) => {
-    const row = document.createElement('div');
-    row.className = 'clip-row';
-
-    const indexCell = document.createElement('span');
-    indexCell.className = 'clip-index';
-    indexCell.textContent = String(clip.index);
-
-    const rangeCell = document.createElement('span');
-    rangeCell.className = 'clip-range';
-    rangeCell.dataset.index = index;
-
-    const textInput = document.createElement('input');
-    textInput.className = 'clip-text';
-    textInput.type = 'text';
-    textInput.value = clip.text;
-    textInput.spellcheck = false;
-    textInput.addEventListener('input', () => { state.clips[index].text = textInput.value; });
-
-    row.append(indexCell, rangeCell, textInput);
-    list.append(row);
+function openEditor() {
+  if (!state.activeResult || !state.activeResult.edit) return;
+  const edit = state.activeResult.edit;
+  renderEditor({
+    summary: edit.summary,
+    topics: edit.topics.map((t) => ({ label: t.label, start: t.start, end: t.end, summary: t.summary || '' })),
+    emotions: edit.emotions.map((e) => ({ label: e.label, start: e.start, end: e.end, valence: e.valence, arousal: e.arousal, evidence: e.evidence || '' })),
+    roles: edit.roles.map((r) => ({ role: r.role, start: r.start, end: r.end })),
+    quotes: edit.quotes.map((q) => ({ text: q.text, start: q.start, end: q.end }))
   });
-  refreshRanges();
-  $('editorCount').textContent = `${state.clips.length} ${u('editing')}`;
+  $('editor').hidden = false;
+  $('guide-frame').style.display = 'none';
+  $('edit-guide').textContent = 'Editando…';
 }
 
-function refreshRanges() {
-  state.clips.forEach((clip, index) => {
-    const cell = document.querySelector(`.clip-range[data-index="${index}"]`);
-    if (cell) cell.textContent = rowLabel(clip);
-  });
+function closeEditor() {
+  $('editor').hidden = true;
+  $('editor').innerHTML = '';
+  $('guide-frame').style.display = 'block';
+  $('edit-guide').textContent = 'Editar';
 }
 
-function showError(message) {
-  const el = $('errorMessage');
-  if (!message) { el.classList.add('hidden'); return; }
-  el.textContent = message;
-  el.classList.remove('hidden');
-}
-
-function showResult(titleKey, details = '', revealPath = null) {
-  $('resultTitle').textContent = u(titleKey);
-  $('resultDetails').textContent = details;
-  $('resultReveal').classList.toggle('hidden', !revealPath);
-  $('resultPanel').classList.remove('hidden');
-  if (revealPath) state.lastExport = { path: revealPath, button: $('resultReveal') };
-}
-
-function hideResult() {
-  $('resultPanel').classList.add('hidden');
-  state.lastExport = null;
-}
-
-function setBusy(busy) {
-  state.transcribing = busy;
-  $('generateButton').disabled = busy || !state.file;
-  $('cancelButton').classList.toggle('hidden', !busy);
-  $('dropZone').style.pointerEvents = busy ? 'none' : '';
-  renderModelManager();
-}
-
-async function pickFromDialog() {
-  const file = await window.pantoSRT.selectMedia();
-  if (file) setFile(file);
-}
-
-function setFile(file) {
-  state.file = { ...file };
-  state.words = null;
-  state.clips = [];
-  hideResult();
-  showError('');
-  $('dropZone').classList.add('hidden');
-  $('fileCard').classList.remove('hidden');
-  $('fileName').textContent = file.name;
-  const meta = [formatBytes(file.size), file.duration ? formatDuration(file.duration) : ''].filter(Boolean).join(' · ');
-  $('fileMeta').textContent = meta;
-  $('editorPanel').classList.add('hidden');
-  $('generateButton').classList.remove('hidden');
-  $('exportSrtButton').classList.add('hidden');
-  $('exportXmlButton').classList.add('hidden');
-  $('generateButton').disabled = false;
-}
-
-function reset() {
-  state.file = null;
-  state.words = null;
-  state.clips = [];
-  state.lastExport = null;
-  showError('');
-  hideResult();
-  $('fileCard').classList.add('hidden');
-  $('dropZone').classList.remove('hidden');
-  $('editorPanel').classList.add('hidden');
-  $('progressPanel').classList.add('hidden');
-  $('generateButton').disabled = true;
-  $('generateButton').classList.remove('hidden');
-  $('exportSrtButton').classList.add('hidden');
-  $('exportXmlButton').classList.add('hidden');
-  $('cancelButton').classList.add('hidden');
-}
-
-function setProgress(percent, label) {
-  $('progressPercent').textContent = `${Math.round(Number(percent) || 0)}%`;
-  $('progressBar').style.width = `${Math.min(100, Math.max(0, percent))}%`;
-  if (label) $('progressLabel').textContent = label;
-  $('progressTime').textContent = '';
-}
-
-async function generate() {
-  if (!state.file) { showError(u('selectFileFirst')); return; }
-  const model = currentModel();
-  if (!model || !model.available) { showError(u('modelRequired')); return; }
-  showError('');
-  hideResult();
-  setBusy(true);
-  $('editorPanel').classList.add('hidden');
-  $('progressPanel').classList.remove('hidden');
-  setProgress(0, u('transcribing'));
-
+async function saveEditor() {
+  if (!state.activeResult) return;
+  const changes = readEditorForm();
+  const button = $('edit-save');
+  button.disabled = true;
+  button.textContent = 'Guardando…';
   try {
-    const result = await window.pantoSRT.transcribeMedia(state.file.path, {
-      model: state.selectedModel,
-      language: SUBTITLE_DEFAULTS.lang,
-      mediaDuration: state.file.duration
-    });
-    state.words = result.words;
-    state.clips = await window.pantoSRT.groupClips(result.words, SUBTITLE_DEFAULTS);
-    $('progressPanel').classList.add('hidden');
-    $('editorPanel').classList.remove('hidden');
-    $('exportSrtButton').classList.remove('hidden');
-    $('exportXmlButton').classList.remove('hidden');
-    renderClipRows();
-    showResult('ready', u('details', state.clips.length, formatDuration(result.duration || 0)));
-  } catch (error) {
-    $('progressPanel').classList.add('hidden');
-    if (error && error.message !== 'cancelled') showError(error.message || 'Error');
+    const result = await window.api.saveEdit(state.activeResult.clipId, changes);
+    closeEditor();
+    await refresh();
+    if (result && result.ok) await openClip(state.activeResult.clipId);
   } finally {
-    setBusy(false);
+    if (button) { button.disabled = false; button.textContent = 'Guardar y re-exportar'; }
   }
 }
 
-async function regroup() {
-  if (!state.words || !state.words.length) return;
-  const previous = new Map(state.clips.map((clip) => [Number(clip.start).toFixed(3), clip.text]));
-  const next = await window.pantoSRT.groupClips(state.words, SUBTITLE_DEFAULTS);
-  next.forEach((clip) => {
-    const edited = previous.get(Number(clip.start).toFixed(3));
-    if (edited !== undefined) clip.text = edited;
-  });
-  state.clips = next;
-  renderClipRows();
-  showResult('ready', u('details', state.clips.length, formatDuration(state.file.duration || 0)));
+async function refresh() {
+  const [sources, clips, results, stats] = await Promise.all([
+    window.api.listSources(),
+    window.api.listClips(),
+    window.api.listResults(),
+    window.api.queueStats()
+  ]);
+  state.sources = sources;
+  state.clips = clips;
+  state.results = new Map(results.map((row) => [row.clipId, row]));
+  renderSources();
+  renderClips();
+  $('queue-badge').textContent = `cola ${stats.pending} · listos ${stats.done}`;
 }
 
-async function exportSubtitle(format) {
-  if (!state.clips.length) return;
-  showError('');
-  try {
-    const result = await window.pantoSRT.exportSubtitles(state.file.path, format, state.clips, {
-      timecodeBase: 0,
-      fps: SUBTITLE_DEFAULTS.fps
+function renderSources() {
+  const container = $('sources');
+  container.innerHTML = '';
+  if (!state.sources.length) {
+    container.innerHTML = '<p class="subtle" style="padding:10px">Sin carpetas. Agrega una para empezar.</p>';
+    return;
+  }
+  for (const source of state.sources) {
+    const clipCount = state.clips.filter((clip) => clip.sourceId === source.id).length;
+    const el = document.createElement('div');
+    el.className = 'source';
+    el.innerHTML = `
+      <div class="source-head">
+        <span class="${source.online ? 'dot-online' : 'dot-offline'}">●</span>
+        <span class="source-name" title="${esc(source.relPath)}">${esc(source.name)}</span>
+      </div>
+      <div class="source-meta">${esc(source.volumeName || '—')} · ${clipCount} clips</div>
+      <div class="source-actions">
+        <button class="btn btn-small" data-scan="${source.id}">Escanear</button>
+        <button class="btn btn-small" data-remove="${source.id}">Quitar</button>
+      </div>`;
+    container.appendChild(el);
+  }
+  container.querySelectorAll('[data-scan]').forEach((button) => {
+    button.addEventListener('click', () => scanSource(button.dataset.scan));
+  });
+  container.querySelectorAll('[data-remove]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      await window.api.removeSource(button.dataset.remove);
+      await refresh();
     });
-    showResult('exportReady', u('exportDetails', result.path), result.outputPath);
-  } catch (error) {
-    showError((error && error.message) || 'Error');
+  });
+}
+
+function fmtSeconds(seconds) {
+  const total = Math.max(0, seconds || 0);
+  const mm = Math.floor(total / 60);
+  const ss = Math.floor(total % 60);
+  return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+}
+
+function renderSearchResults() {
+  const container = $('clips');
+  container.innerHTML = '';
+  $('clip-count').textContent = `· ${state.searchResults.length} coincidencias`;
+  if (!state.searchResults.length) {
+    container.innerHTML = '<p class="search-empty">Sin coincidencias.</p>';
+    return;
+  }
+  for (const hit of state.searchResults) {
+    const el = document.createElement('div');
+    el.className = 'hit';
+    el.dataset.open = hit.clipId;
+    el.innerHTML = `
+      <div class="hit-head">
+        <span class="hit-section ${esc(hit.section)}">${esc(hit.section)}</span>
+        <span class="hit-clip">${esc(hit.clipName)}</span>
+        <span class="hit-tc">${fmtSeconds(hit.start)}</span>
+      </div>
+      <div class="hit-text">${hit.label ? `<strong>${esc(hit.label)}</strong> · ` : ''}${esc(hit.text || '')}</div>`;
+    container.appendChild(el);
+  }
+  container.querySelectorAll('[data-open]').forEach((node) => {
+    node.addEventListener('click', () => openClip(node.dataset.open));
+  });
+}
+
+function renderClips() {
+  if (state.searchQuery) { renderSearchResults(); return; }
+  const container = $('clips');
+  container.innerHTML = '';
+  $('clip-count').textContent = `(${state.clips.length})`;
+  for (const clip of state.clips) {
+    const status = statusFor(clip.id);
+    const el = document.createElement('div');
+    el.className = `clip${state.activeClipId === clip.id ? ' selected' : ''}`;
+    el.innerHTML = `
+      <input type="checkbox" ${state.selected.has(clip.id) ? 'checked' : ''} data-check="${clip.id}">
+      <div class="clip-main" data-open="${clip.id}">
+        <div class="clip-name">${clip.online ? '' : '⚠ '}${esc(clip.name)}</div>
+        <div class="clip-meta">${esc(clip.mediaType)} · ${fmtSize(clip.size)}</div>
+      </div>
+      <span class="status ${status.className}">${status.label}</span>`;
+    container.appendChild(el);
+  }
+  container.querySelectorAll('[data-check]').forEach((box) => {
+    box.addEventListener('change', () => {
+      if (box.checked) state.selected.add(box.dataset.check);
+      else state.selected.delete(box.dataset.check);
+    });
+  });
+  container.querySelectorAll('[data-open]').forEach((node) => {
+    node.addEventListener('click', () => openClip(node.dataset.open));
+  });
+}
+
+async function scanSource(sourceId) {
+  $('scan-status').textContent = 'escaneando…';
+  await window.api.scanSource(sourceId);
+  $('scan-status').textContent = 'escaneo completo';
+  await refresh();
+}
+
+async function openClip(clipId) {
+  state.activeClipId = clipId;
+  renderClips();
+  closeEditor();
+  const result = await window.api.getResult(clipId);
+  state.activeResult = result;
+  const frame = $('guide-frame');
+  const empty = $('guide-empty');
+  if (!result) {
+    frame.style.display = 'none';
+    empty.style.display = 'grid';
+    $('guide-title').textContent = 'Guía de edición';
+    $('guide-files').innerHTML = '';
+    $('open-guide').disabled = true;
+    $('open-folder').disabled = true;
+    $('edit-guide').disabled = true;
+    return;
+  }
+  empty.style.display = 'none';
+  frame.style.display = 'block';
+  frame.srcdoc = result.html || `<pre>${result.markdown}</pre>`;
+  $('guide-title').textContent = `Guía — ${result.clipName}${result.edited ? ' (editada)' : ''}`;
+  $('guide-files').innerHTML = result.files
+    .map((name) => `<span class="file-chip" data-file="${result.outDir}/${name}">${name}</span>`)
+    .join('');
+  $('guide-files').querySelectorAll('[data-file]').forEach((chip) => {
+    chip.addEventListener('click', () => window.api.openPath(chip.dataset.file));
+  });
+  $('open-guide').disabled = false;
+  $('open-folder').disabled = false;
+  $('edit-guide').disabled = !result.edit;
+  $('open-guide').onclick = () => window.api.openPath(`${result.outDir}/guide.md`);
+  $('open-folder').onclick = () => window.api.openPath(result.outDir);
+}
+
+async function runPipeline(clipIds) {
+  if (state.running) return;
+  state.running = true;
+  $('run-all').disabled = true;
+  $('run-selected').disabled = true;
+  $('cancel-run').disabled = false;
+  const payload = clipIds && clipIds.length ? clipIds : null;
+  try {
+    const result = await window.api.run(payload);
+    if (result && result.processed && result.processed.length) {
+      const last = result.processed.filter((item) => item.ok).pop();
+      if (last) await openClip(last.clipId);
+    }
+  } finally {
+    state.running = false;
+    $('run-all').disabled = false;
+    $('run-selected').disabled = false;
+    $('cancel-run').disabled = true;
+    $('scan-status').textContent = '';
+    await refresh();
   }
 }
 
-function wireEvents() {
-  $('dropZone').addEventListener('click', pickFromDialog);
-  $('removeButton').addEventListener('click', reset);
-  $('generateButton').addEventListener('click', generate);
-  $('modelSelect').addEventListener('change', (event) => {
-    state.selectedModel = event.target.value;
-    localStorage.setItem('panto-srt-model', state.selectedModel);
-    renderModelManager();
-  });
-  $('modelDownloadButton').addEventListener('click', async () => {
-    const modelId = state.selectedModel;
-    showError('');
-    try {
-      state.modelDownload = { id: modelId, percent: 0 };
-      renderModelManager();
-      state.models = await window.pantoSRT.downloadModel(modelId);
-    } catch (error) {
-      showError((error && error.message) || 'Error');
-    } finally {
-      state.modelDownload = null;
-      renderModelManager();
-    }
-  });
-  $('modelDeleteButton').addEventListener('click', async () => {
-    const model = currentModel();
-    if (!model || !model.removable) return;
-    showError('');
-    try {
-      state.models = await window.pantoSRT.deleteModel(model.id);
-      renderModelManager();
-    } catch (error) {
-      showError((error && error.message) || 'Error');
-    }
-  });
-  $('cancelButton').addEventListener('click', () => window.pantoSRT.cancelTranscription());
-
-  $('regroupButton').addEventListener('click', regroup);
-  $('exportSrtButton').addEventListener('click', () => exportSubtitle('srt'));
-  $('exportXmlButton').addEventListener('click', () => exportSubtitle('fcpxml'));
-
-  $('resultReveal').addEventListener('click', () => {
-    if (state.lastExport) window.pantoSRT.showInFolder(state.lastExport.path);
-  });
-
-  languageToggle.addEventListener('click', async () => {
-    const next = state.appLang === 'es' ? 'en' : 'es';
-    await window.pantoSRT.setLanguage(next);
-    setUiLanguage(next);
-  });
-
-  themeToggle.addEventListener('click', () => {
-    applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
-  });
-
-  const dropZone = $('dropZone');
-  let dragDepth = 0;
-  document.addEventListener('dragenter', (event) => {
-    if (!state.file && event.dataTransfer && Array.from(event.dataTransfer.types).includes('Files')) {
-      event.preventDefault();
-      dragDepth += 1;
-      dropZone.classList.add('dragging');
-    }
-  });
-  document.addEventListener('dragleave', () => {
-    dragDepth = Math.max(0, dragDepth - 1);
-    if (!dragDepth) dropZone.classList.remove('dragging');
-  });
-  document.addEventListener('dragover', (event) => {
-    if (!state.file) event.preventDefault();
-  });
-  document.addEventListener('drop', async (event) => {
-    event.preventDefault();
-    dropZone.classList.remove('dragging');
-    dragDepth = 0;
-    if (state.file || !event.dataTransfer.files.length) return;
-    const filePath = window.pantoSRT.pathForFile(event.dataTransfer.files[0]);
-    try {
-      const details = await window.pantoSRT.inspectMedia(filePath);
-      setFile(details);
-    } catch (_) {
-      showError(state.appLang === 'es' ? 'Formato no compatible.' : 'Format not supported.');
-    }
-  });
-
-  const unsubStatus = window.pantoSRT.onTranscriptionStatus((payload) => {
-    if (payload.status === 'model-download') setProgress(0, u('downloadingModel'));
-    else if (payload.status === 'model-ready') setProgress(0, u('modelReady'));
-    else if (payload.status === 'starting') setProgress(0, u('transcribing'));
-    else if (payload.status === 'cancelling') setProgress(0, u('cancelling'));
-  });
-  window.pantoSRT.onTranscriptionProgress((payload) => {
-    if (payload.phase === 'model') setProgress(payload.percent, u('downloadingModel'));
-    else setProgress(payload.percent);
-  });
-  const unsubModelDownload = window.pantoSRT.onModelDownloadStatus((payload) => {
-    if (!state.modelDownload || payload.model !== state.modelDownload.id) return;
-    state.modelDownload.percent = payload.percent;
-    renderModelManager();
-  });
-  window.addEventListener('beforeunload', unsubStatus);
-  window.addEventListener('beforeunload', unsubModelDownload);
+async function health() {
+  const badge = $('llm-badge');
+  badge.textContent = 'LLM…';
+  badge.className = 'badge badge-muted';
+  const result = await window.api.llmHealth();
+  if (result.ok) {
+    const port = (result.endpoint || '').replace(/\/v1$/, '').split(':').pop();
+    badge.textContent = `LLM :${port}`;
+    badge.title = result.endpoint;
+    badge.className = 'badge badge-ok';
+  } else {
+    badge.textContent = 'LLM no disponible';
+    badge.title = 'Arranca el servidor con: npm run llm';
+    badge.className = 'badge badge-err';
+  }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-  $('resultReveal').textContent = window.pantoSRT.platform === 'darwin' ? '⌘' : '◎';
-  setUiLanguage('es');
-  applyTheme(localStorage.getItem('panto-srt-theme') || 'dark');
-  const sizeObserver = new MutationObserver(requestWindowHeight);
-  document.querySelectorAll('.shell > *').forEach((el) => {
-    sizeObserver.observe(el, { attributes: true, attributeFilter: ['class'] });
+let searchTimer = null;
+function onSearchInput(value) {
+  state.searchQuery = value.trim();
+  $('search-clear').hidden = !state.searchQuery;
+  clearTimeout(searchTimer);
+  if (!state.searchQuery) { state.searchResults = []; renderClips(); return; }
+  searchTimer = setTimeout(async () => {
+    state.searchResults = await window.api.search(state.searchQuery);
+    if (state.searchQuery) renderClips();
+  }, 220);
+}
+
+async function buildProject() {
+  const button = $('project-guide');
+  button.disabled = true;
+  button.textContent = 'Generando…';
+  try {
+    const result = await window.api.buildProject();
+    const frame = $('guide-frame');
+    $('guide-empty').style.display = 'none';
+    frame.style.display = 'block';
+    frame.srcdoc = result.html || '<p>Guía de proyecto vacía.</p>';
+    $('guide-title').textContent = 'Guía de proyecto';
+    state.activeClipId = null;
+    state.activeResult = null;
+    closeEditor();
+    $('edit-guide').disabled = true;
+    const names = ['project-guide.md', 'project-guide.html', 'selects.csv'];
+    $('guide-files').innerHTML = names
+      .filter((name) => result.files[name])
+      .map((name) => `<span class="file-chip" data-file="${result.files[name]}">${name}</span>`)
+      .join('');
+    $('guide-files').querySelectorAll('[data-file]').forEach((chip) => {
+      chip.addEventListener('click', () => window.api.openPath(chip.dataset.file));
+    });
+    $('open-guide').disabled = false;
+    $('open-folder').disabled = false;
+    $('open-guide').onclick = () => window.api.openPath(result.files['project-guide.md']);
+    $('open-folder').onclick = () => window.api.openPath(state.outRoot);
+    $('scan-status').textContent = `${result.stats.clips} clips · ${result.stats.topics} temas`;
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Guía de proyecto';
+  }
+}
+
+async function runExport(button, invoke) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Exportando…';
+  try {
+    const result = await invoke();
+    if (result && result.ok) {
+      $('scan-status').textContent = `${result.count} archivo(s) en ${result.folder}`;
+      await window.api.openPath(result.folder);
+    } else if (result && result.canceled) {
+      $('scan-status').textContent = 'exportación cancelada';
+    }
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+function bind() {
+  $('add-source').addEventListener('click', async () => {
+    await window.api.addSource();
+    await refresh();
   });
-  requestWindowHeight();
-  wireEvents();
-  refreshModels().catch((error) => showError((error && error.message) || 'Error'));
-});
+  $('run-all').addEventListener('click', () => runPipeline(null));
+  $('project-guide').addEventListener('click', () => buildProject());
+  $('export-md').addEventListener('click', () => runExport($('export-md'), () => window.api.exportMd()));
+  $('export-srt').addEventListener('click', () => runExport($('export-srt'), () => window.api.exportSrt()));
+  $('export-fcpxml').addEventListener('click', () => runExport($('export-fcpxml'), () => window.api.exportFcpxml()));
+  $('edit-guide').addEventListener('click', () => openEditor());
+  $('editor').addEventListener('click', (event) => {
+    const remove = event.target.closest('[data-remove]');
+    if (remove) {
+      const model = readEditorForm();
+      const row = remove.closest('.edit-row');
+      model[row.dataset.kind].splice(Number(row.dataset.i), 1);
+      renderEditor(model);
+      return;
+    }
+    const add = event.target.closest('[data-add]');
+    if (add) {
+      const model = readEditorForm();
+      model[add.dataset.add].push({ ...EDIT_BLANKS[add.dataset.add] });
+      renderEditor(model);
+      return;
+    }
+    if (event.target.id === 'edit-cancel') closeEditor();
+    if (event.target.id === 'edit-save') saveEditor();
+  });
+  $('search-input').addEventListener('input', (event) => onSearchInput(event.target.value));
+  $('search-clear').addEventListener('click', () => { $('search-input').value = ''; onSearchInput(''); });
+  $('run-selected').addEventListener('click', () => runPipeline([...state.selected]));
+  $('cancel-run').addEventListener('click', async () => {
+    $('scan-status').textContent = 'cancelando…';
+    await window.api.cancel();
+  });
+  $('select-all').addEventListener('click', () => {
+    state.clips.forEach((clip) => state.selected.add(clip.id));
+    renderClips();
+  });
+  $('select-none').addEventListener('click', () => {
+    state.selected.clear();
+    renderClips();
+  });
+  window.api.onScanProgress((payload) => {
+    $('scan-status').textContent = `escaneando… ${payload.index} (${payload.file})`;
+  });
+  window.api.onPipelineProgress((payload) => {
+    const labels = { claimed: 'en proceso', transcribing: 'transcribiendo', analyzing: 'analizando', exporting: 'exportando', done: 'listo', error: 'error' };
+    $('scan-status').textContent = `${payload.clipId.slice(0, 8)}: ${labels[payload.state] || payload.state}`;
+    if (payload.state === 'done') refresh();
+  });
+}
+
+async function boot() {
+  bind();
+  const info = await window.api.info();
+  $('dbpath').textContent = 'análisis local · sin copias';
+  $('dbpath').title = info.dbPath;
+  state.outRoot = info.outRoot;
+  await health();
+  await refresh();
+}
+
+boot();
