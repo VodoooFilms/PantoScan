@@ -1,8 +1,14 @@
+<p align="center">
+  <img src="assets/icons/pantoscan.png" alt="PantoScan" width="120">
+</p>
+
 # PantoScan
 
 Herramienta local (macOS) para **catalogar y analizar material de video en crudo** sin copiarlo: indexa carpetas por referencia, transcribe con tiempos, detecta **temas y emociones en el tiempo** y produce una **guía de edición** exportable (Markdown, subtítulos `.srt`, timelines `.fcpxml`, selectos `.csv`).
 
 Todo el procesamiento es local y privado. El resultado pesa prácticamente nada: solo texto.
+
+![Interfaz de PantoScan](assets/screenshots/pantoscan-interface.png)
 
 ## Características
 
