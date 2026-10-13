@@ -24,7 +24,11 @@ contextBridge.exposeInMainWorld('api', {
   exportFcpxml: () => ipcRenderer.invoke('export:fcpxml'),
   getProject: () => ipcRenderer.invoke('project:get'),
   openPath: (target) => ipcRenderer.invoke('open:path', target),
+  chooseOutputDir: () => ipcRenderer.invoke('output:choose'),
+  getOutputDir: () => ipcRenderer.invoke('output:get'),
+  setOutputDir: (dir) => ipcRenderer.invoke('output:set', dir),
   llmHealth: () => ipcRenderer.invoke('llm:health'),
   onScanProgress: (handler) => ipcRenderer.on('scan:progress', (_event, payload) => handler(payload)),
-  onPipelineProgress: (handler) => ipcRenderer.on('pipeline:progress', (_event, payload) => handler(payload))
+  onPipelineProgress: (handler) => ipcRenderer.on('pipeline:progress', (_event, payload) => handler(payload)),
+  onOutputChanged: (handler) => ipcRenderer.on('output:changed', (_event, payload) => handler(payload))
 });

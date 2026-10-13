@@ -11,6 +11,7 @@ const { createPipeline } = require('./lib/pipeline');
 const { createAnalyzer, endpointCandidates, reachable } = require('./lib/analysis');
 const { buildProject, writeProject, backfill, exportMarkdownFiles, exportSrtFiles, exportFcpxmlFiles } = require('./lib/project');
 const { applyEdits } = require('./lib/edit');
+const { loadConfig, saveConfig } = require('./lib/config');
 
 const APP_NAME = 'PantoScan';
 const APP_ICON = path.join(__dirname, '..', '..', 'assets', 'icons', 'pantoscan.png');
@@ -27,7 +28,8 @@ let running = false;
 let runController = null;
 
 function outRoot() {
-  return path.join(app.getPath('userData'), 'out');
+  const config = loadConfig();
+  return config.outputDir || path.join(app.getPath('userData'), 'out');
 }
 
 function init() {
@@ -66,14 +68,18 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 }
 
-ipcMain.handle('app:info', () => ({
-  dbPath: path.join(app.getPath('userData'), 'library.db'),
-  outRoot: outRoot(),
-  versions: {
-    electron: process.versions.electron,
-    node: process.versions.node
-  }
-}));
+ipcMain.handle('app:info', () => {
+  const config = loadConfig();
+  return {
+    dbPath: path.join(app.getPath('userData'), 'library.db'),
+    outRoot: outRoot(),
+    outputDir: config.outputDir || null,
+    versions: {
+      electron: process.versions.electron,
+      node: process.versions.node
+    }
+  };
+});
 
 ipcMain.handle('library:summary', () => library.summary());
 ipcMain.handle('sources:list', () => library.listSources());
@@ -245,6 +251,31 @@ ipcMain.handle('project:get', () => {
   const target = path.join(outRoot(), 'project-guide.html');
   if (!fs.existsSync(target)) return null;
   try { return fs.readFileSync(target, 'utf8'); } catch (_) { return null; }
+});
+
+ipcMain.handle('output:get', () => ({ outputDir: loadConfig().outputDir || null, outRoot: outRoot() }));
+ipcMain.handle('output:set', (_event, dir) => {
+  if (!dir || typeof dir !== 'string') return { ok: false };
+  const normalized = path.resolve(dir);
+  try { fs.mkdirSync(normalized, { recursive: true }); } catch (_) {}
+  saveConfig({ outputDir: normalized });
+  if (pipeline && typeof pipeline.setOutRoot === 'function') {
+    pipeline.setOutRoot(normalized);
+  } else if (pipeline) {
+    pipeline._outRoot = normalized;
+  }
+  send('output:changed', { outRoot: normalized });
+  return { ok: true, outRoot: normalized };
+});
+ipcMain.handle('output:choose', async () => {
+  const picked = await dialog.showOpenDialog(mainWindow, {
+    title: 'Elegir carpeta para guardar transcripciones y guías',
+    buttonLabel: 'Usar esta carpeta',
+    properties: ['openDirectory', 'createDirectory'],
+    defaultPath: loadConfig().outputDir || app.getPath('documents')
+  });
+  if (picked.canceled || !picked.filePaths.length) return { ok: false, canceled: true };
+  return ipcMain.invoke('output:set', picked.filePaths[0]);
 });
 
 ipcMain.handle('open:path', (_event, target) => shell.openPath(target));

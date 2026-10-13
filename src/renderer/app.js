@@ -398,6 +398,18 @@ async function runExport(button, invoke) {
 }
 
 function bind() {
+  if ($('set-output')) {
+    $('set-output').addEventListener('click', async () => {
+      const result = await window.api.chooseOutputDir();
+      if (result && result.outRoot) {
+        state.outRoot = result.outRoot;
+        const info = await window.api.info();
+        if (info) state.outRoot = info.outRoot || state.outRoot;
+        $('dbpath').title = info ? info.dbPath : $('dbpath').title;
+        await refresh();
+      }
+    });
+  }
   $('add-source').addEventListener('click', async () => {
     await window.api.addSource();
     await refresh();
@@ -450,6 +462,13 @@ function bind() {
     $('scan-status').textContent = `${payload.clipId.slice(0, 8)}: ${labels[payload.state] || payload.state}`;
     if (payload.state === 'done') refresh();
   });
+  if (window.api.onOutputChanged) {
+    window.api.onOutputChanged((payload) => {
+      if (payload && payload.outRoot) {
+        state.outRoot = payload.outRoot;
+      }
+    });
+  }
 }
 
 async function boot() {

@@ -12,8 +12,11 @@ const DEFAULTS = {
   llmCandidates: ['http://127.0.0.1:8081/v1', 'http://127.0.0.1:8080/v1'],
   llmModel: null,
   asrModel: null,
+  vadModel: null,
+  vadThreshold: 0.6,
   ffmpegPath: null,
-  whisperPath: null
+  whisperPath: null,
+  outputDir: null
 };
 
 function loadConfig() {

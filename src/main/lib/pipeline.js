@@ -40,14 +40,22 @@ function createPipeline(options = {}) {
   const asr = options.asr || createAsr();
   const analyzer = options.analyzer || createAnalyzer();
   const probe = options.probe || createProbe();
-  const outRoot = options.outRoot || path.join(process.cwd(), 'out');
+  let outRoot = options.outRoot || path.join(process.cwd(), 'out');
   const now = options.now || (() => Date.now());
   const logger = options.logger || (() => {});
   const asrSignature = options.asrSignature || 'whisper-large-v3-turbo';
   const taxonomyTag = JSON.stringify(analyzer.taxonomy || {});
 
+  function setOutRoot(newRoot) {
+    if (typeof newRoot === 'string' && newRoot) {
+      outRoot = newRoot;
+    }
+    return outRoot;
+  }
+
   function asrFingerprint(clip, language) {
-    return hash('asr:v1', asrSignature, language || 'auto', clip.size, clip.mtime);
+    const vad = (asr.vadModelPath && fs.existsSync(asr.vadModelPath)) ? `vad:${path.basename(asr.vadModelPath)}:${asr.vadThreshold ?? ''}` : 'vad:none';
+    return hash('asr:v2', asrSignature, language || 'auto', vad, clip.size, clip.mtime);
   }
 
   function analysisFingerprint(asrFp) {
@@ -150,6 +158,13 @@ function createPipeline(options = {}) {
       if (analysis) {
         reused.analysis = true;
         emit('analyzing', 'reutilizado');
+      } else if (!(transcript.segments || []).length) {
+        emit('analyzing', 'sin diálogo');
+        analysis = {
+          summary: 'Sin diálogo detectado.',
+          topics: [], emotions: [], roles: [], quotes: [],
+          model: null, generatedAt: new Date().toISOString()
+        };
       } else {
         emit('analyzing');
         analysis = await analyzer.analyzeTranscript(transcript, {
@@ -238,7 +253,7 @@ function createPipeline(options = {}) {
     return written;
   }
 
-  return { processClip, drain, writeOut, regenerateFromEdit, artifacts };
+  return { processClip, drain, writeOut, regenerateFromEdit, artifacts, setOutRoot, get outRoot() { return outRoot; } };
 }
 
 module.exports = { createPipeline };

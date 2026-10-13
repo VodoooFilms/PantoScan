@@ -51,12 +51,30 @@ function normalizeWhisper(raw) {
   };
 }
 
+function resolveVadModel(explicitPath, modelPath) {
+  const candidate = explicitPath || process.env.DOC_VAD_MODEL || '';
+  if (candidate && fs.existsSync(candidate)) return candidate;
+  if (!modelPath) return null;
+  const dir = path.dirname(modelPath);
+  let entries = [];
+  try { entries = fs.readdirSync(dir); } catch (_) { return null; }
+  const match = entries
+    .filter((name) => /silero.*\.bin$/i.test(name) || /ggml-.*vad.*\.bin$/i.test(name))
+    .sort();
+  if (!match.length) return null;
+  return path.join(dir, match[0]);
+}
+
 function createAsr(options = {}) {
   const run = options.run || defaultRun;
   const config = loadConfig();
   const ffmpegPath = options.ffmpegPath || process.env.DOC_FFMPEG || config.ffmpegPath || DEFAULT_FFMPEG;
   const whisperPath = options.whisperPath || process.env.DOC_WHISPER || config.whisperPath || DEFAULT_WHISPER;
   const modelPath = options.modelPath || process.env.DOC_ASR_MODEL || config.asrModel || DEFAULT_MODEL;
+  const vadModelPath = options.vadModelPath || config.vadModel || resolveVadModel(null, modelPath);
+  const vadThreshold = options.vadThreshold != null
+    ? options.vadThreshold
+    : (config.vadThreshold != null ? config.vadThreshold : 0.6);
   const tmpRoot = options.tmpRoot || os.tmpdir();
 
   async function extractAudio(srcPath, tmpDir, signal) {
@@ -71,14 +89,20 @@ function createAsr(options = {}) {
 
   async function runWhisper(wavPath, tmpDir, opts = {}, signal) {
     const prefix = path.join(tmpDir, 'transcript');
-    await run(whisperPath, [
+    const vadModel = opts.vadModelPath || vadModelPath;
+    const useVad = opts.vad !== false && Boolean(vadModel) && fs.existsSync(vadModel);
+    const args = [
       '-m', opts.modelPath || modelPath,
       '-f', wavPath,
       '-ojf', '-sow',
       '-l', opts.language || 'auto',
       '-of', prefix,
       '-t', String(opts.threads || 4)
-    ], { signal });
+    ];
+    if (useVad) {
+      args.push('--vad', '-vm', vadModel, '-vt', String(opts.vadThreshold != null ? opts.vadThreshold : vadThreshold));
+    }
+    await run(whisperPath, args, { signal });
     let raw;
     try {
       raw = JSON.parse(fs.readFileSync(prefix + '.json', 'utf8'));
@@ -102,7 +126,7 @@ function createAsr(options = {}) {
     }
   }
 
-  return { transcribeFile, extractAudio, runWhisper, normalizeWhisper };
+  return { transcribeFile, extractAudio, runWhisper, normalizeWhisper, vadModelPath, vadThreshold };
 }
 
-module.exports = { createAsr, normalizeWhisper, defaultRun, DEFAULT_MODEL, DEFAULT_FFMPEG, DEFAULT_WHISPER };
+module.exports = { createAsr, normalizeWhisper, defaultRun, resolveVadModel, DEFAULT_MODEL, DEFAULT_FFMPEG, DEFAULT_WHISPER };
